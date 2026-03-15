@@ -209,7 +209,7 @@ describe('File Utils', () => {
     })
   })
 
-describe('acquireLock', () => {
+  describe('acquireLock', () => {
     beforeEach(() => {
       // Suppress expected console.error output in lock tests
       vi.spyOn(console, 'error').mockImplementation(() => {})
@@ -265,6 +265,48 @@ describe('acquireLock', () => {
       vi.mocked(fs.mkdir).mockResolvedValue(undefined)
 
       await expect(acquireLock('test-lock')).rejects.toThrow('Permission denied')
+    })
+
+    it('cleans up stale lock from crashed process', async () => {
+      const mockFd: MockFileHandle = {
+        close: vi.fn().mockResolvedValue(undefined),
+        writeFile: vi.fn().mockResolvedValue(undefined)
+      }
+      
+      // Simulate a stale lock file with old timestamp
+      const staleLockMetadata = JSON.stringify({
+        pid: 99999, // Non-existent process
+        timestamp: Date.now() - (10 * 60 * 1000) // 10 minutes ago (stale)
+      })
+      
+      vi.mocked(fs.readFile).mockResolvedValueOnce(staleLockMetadata)
+      vi.mocked(fs.unlink).mockResolvedValue(undefined)
+      vi.mocked(fs.open).mockResolvedValue(mockFd as never)
+      vi.mocked(fs.mkdir).mockResolvedValue(undefined)
+
+      const release = await acquireLock('test-lock')
+      expect(typeof release).toBe('function')
+      
+      // Should have called unlink to remove the stale lock
+      expect(fs.unlink).toHaveBeenCalled()
+    })
+
+    it('handles release lock failure gracefully', async () => {
+      const mockFd: MockFileHandle = {
+        close: vi.fn().mockResolvedValue(undefined),
+        writeFile: vi.fn().mockResolvedValue(undefined)
+      }
+      vi.mocked(fs.open).mockResolvedValue(mockFd as never)
+      vi.mocked(fs.mkdir).mockResolvedValue(undefined)
+      
+      // First call for stale cleanup (if any), second for release
+      vi.mocked(fs.unlink)
+        .mockRejectedValue(new Error('Failed to release lock'))
+
+      const release = await acquireLock('test-lock')
+      
+      // Release should not throw even if unlink fails
+      await expect(release()).resolves.toBeUndefined()
     })
   })
 })

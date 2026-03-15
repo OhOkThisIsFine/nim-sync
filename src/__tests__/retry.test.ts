@@ -137,3 +137,65 @@ describe('retryableFetch', () => {
     expect(result).toBe(successResponse)
   })
 })
+
+describe('edge cases', () => {
+  it('handles non-Error thrown values by wrapping them', async () => {
+    const fn = vi.fn().mockRejectedValue('string error')
+    
+    // withRetry wraps non-Error values in Error objects
+    await expect(withRetry(fn, { maxRetries: 0 })).rejects.toThrow('string error')
+  })
+
+  it('does not retry when maxRetries is 0', async () => {
+    const error = new Error('Network timeout')
+    const fn = vi.fn().mockRejectedValue(error)
+    
+    await expect(withRetry(fn, { maxRetries: 0, retryOnNetworkError: true })).rejects.toThrow('Network timeout')
+    expect(fn).toHaveBeenCalledTimes(1)
+  })
+
+  it('handles plain object errors without statusCode (not retried)', async () => {
+    // Plain objects without statusCode should not match HTTP error pattern
+    // and if retryOnNetworkError is false, they shouldn't be retried
+    const error = { message: 'Custom error object' }
+    const fn = vi.fn().mockRejectedValue(error)
+    
+    // Since the error is not an Error instance, it gets wrapped
+    await expect(withRetry(fn, { maxRetries: 1, initialDelay: 10, retryOnNetworkError: false })).rejects.toThrow()
+    expect(fn).toHaveBeenCalledTimes(1)
+  })
+
+  it('handles AbortError as network error', async () => {
+    const error = new Error('Request aborted')
+    error.name = 'AbortError'
+    const fn = vi.fn()
+      .mockRejectedValueOnce(error)
+      .mockResolvedValue('success')
+    
+    const result = await withRetry(fn, { maxRetries: 1, initialDelay: 10, retryOnNetworkError: true })
+    expect(result).toBe('success')
+    expect(fn).toHaveBeenCalledTimes(2)
+  })
+
+  it('handles ECONNREFUSED as network error', async () => {
+    const error = new Error('ECONNREFUSED: connection refused')
+    const fn = vi.fn()
+      .mockRejectedValueOnce(error)
+      .mockResolvedValue('success')
+    
+    const result = await withRetry(fn, { maxRetries: 1, initialDelay: 10, retryOnNetworkError: true })
+    expect(result).toBe('success')
+    expect(fn).toHaveBeenCalledTimes(2)
+  })
+
+  it('handles ETIMEDOUT as network error', async () => {
+    const error = new Error('ETIMEDOUT: connection timed out')
+    const fn = vi.fn()
+      .mockRejectedValueOnce(error)
+      .mockResolvedValue('success')
+    
+    const result = await withRetry(fn, { maxRetries: 1, initialDelay: 10, retryOnNetworkError: true })
+    expect(result).toBe('success')
+    expect(fn).toHaveBeenCalledTimes(2)
+  })
+})

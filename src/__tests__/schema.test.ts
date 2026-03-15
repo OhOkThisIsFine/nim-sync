@@ -132,4 +132,40 @@ describe('validateOpenCodeConfig', () => {
     const result = validateOpenCodeConfig(config)
     expect(result.valid).toBe(true) // baseURL is in additionalProperties
   })
+
+  it('reports error when model is null', () => {
+    const config = {
+      provider: {
+        nim: {
+          npm: '@ai-sdk/openai-compatible',
+          name: 'NVIDIA NIM',
+          models: {
+            'model-1': null // model is null instead of object
+          }
+        }
+      }
+    }
+
+    const result = validateOpenCodeConfig(config)
+    expect(result.valid).toBe(false)
+    expect(result.errors).toContain('provider.nim.models.model-1 must be an object')
+  })
+
+  it('reports error when model is a primitive value', () => {
+    const config = {
+      provider: {
+        nim: {
+          npm: '@ai-sdk/openai-compatible',
+          name: 'NVIDIA NIM',
+          models: {
+            'model-1': 'just-a-string' // should be an object
+          }
+        }
+      }
+    }
+
+    const result = validateOpenCodeConfig(config)
+    expect(result.valid).toBe(false)
+    expect(result.errors).toContain('provider.nim.models.model-1 must be an object')
+  })
 })

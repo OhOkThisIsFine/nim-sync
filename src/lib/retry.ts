@@ -122,7 +122,7 @@ function isHttpError(error: unknown): error is { statusCode: number; statusText:
     typeof error === 'object' &&
     error !== null &&
     'statusCode' in error &&
-    typeof (error as any).statusCode === 'number'
+    typeof (error as Record<string, unknown>).statusCode === 'number'
   )
 }
 
