@@ -2,10 +2,26 @@
   "name": "opencode-nim-sync",
   "version": "1.0.0",
   "description": "OpenCode plugin to sync NVIDIA NIM models automatically",
-  "main": "dist/index.js",
+  "main": "dist/nim-sync.mjs",
+  "types": "dist/index.d.ts",
   "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/nim-sync.mjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
-    "build": "tsc",
+    "clean": "node scripts/clean.mjs",
+    "build:ts": "tsc",
+    "bundle": "node scripts/bundle.mjs",
+    "build": "npm run clean && npm run build:ts && npm run bundle",
+    "prepack": "npm run build",
     "dev": "tsc --watch",
     "test": "vitest",
     "test:watch": "vitest --watch",
@@ -26,6 +42,7 @@
     "@typescript-eslint/eslint-plugin": "^6.19.1",
     "@typescript-eslint/parser": "^6.19.1",
     "@vitest/coverage-v8": "^1.6.1",
+    "esbuild": "^0.25.11",
     "eslint": "^8.56.0",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",

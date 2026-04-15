@@ -1,6 +1,6 @@
 import fs from 'fs/promises'
 import path from 'path'
-import { applyEdits, modify as modifyJSONC, parse as parseJSONC } from 'jsonc-parser'
+import { applyEdits, modify as modifyJSONC, parse as parseJSONC } from 'jsonc-parser/lib/esm/main.js'
 import type { LockMetadata, PlatformPaths } from '../types/index.js'
 
 /**

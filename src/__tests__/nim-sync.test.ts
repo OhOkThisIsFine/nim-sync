@@ -137,6 +137,27 @@ describe('NIM Sync Unit Tests', () => {
   })
 
   describe('updateConfig', () => {
+    it('fails safe when the existing config cannot be parsed', async () => {
+      vi.mocked(fs.readFile).mockImplementation(async (filePath: string) => {
+        if (filePath.includes('auth.json')) {
+          return Promise.reject(Object.assign(new Error('File not found'), { code: 'ENOENT' }))
+        }
+        if (filePath.includes('opencode.jsonc')) {
+          return Promise.resolve('{ invalid json }')
+        }
+        return Promise.resolve('{}')
+      })
+
+      const plugin = await syncNIMModels(mockPluginAPI)
+
+      await expect(plugin.updateConfig?.([
+        { id: 'existing-model', name: 'Existing Model' }
+      ])).rejects.toThrow('JSONC parse errors')
+
+      const writePaths = vi.mocked(fs.writeFile).mock.calls.map(([filePath]) => String(filePath))
+      expect(writePaths.some(filePath => filePath.includes('opencode.jsonc'))).toBe(false)
+    })
+
     it('deep merges provider.nim without overwriting other provider data', async () => {
       const existingConfig = JSON.stringify({
         provider: {
@@ -205,7 +226,8 @@ describe('NIM Sync Unit Tests', () => {
             },
             models: {
               'existing-model': {
-                name: 'Existing Model'
+                name: 'Existing Model',
+                options: {}
               }
             }
           }
@@ -275,9 +297,15 @@ describe('NIM Sync Unit Tests', () => {
       const existingConfig = JSON.stringify({
         provider: {
           nim: {
+            npm: '@ai-sdk/openai-compatible',
+            name: 'NVIDIA NIM',
+            options: {
+              baseURL: 'https://integrate.api.nvidia.com/v1'
+            },
             models: {
               'existing-model': {
-                name: 'Existing Model'
+                name: 'Existing Model',
+                options: {}
               }
             }
           }
@@ -309,6 +337,58 @@ describe('NIM Sync Unit Tests', () => {
       const writePaths = vi.mocked(fs.writeFile).mock.calls.map(([filePath]) => String(filePath))
       expect(writePaths.some(filePath => filePath.includes('nim-sync-cache.json'))).toBe(true)
       expect(writePaths.some(filePath => filePath.includes('opencode.jsonc'))).toBe(false)
+    })
+
+    it('reconciles managed nim fields even when the model hash is unchanged', async () => {
+      const existingConfig = JSON.stringify({
+        provider: {
+          nim: {
+            npm: 'custom-package',
+            name: 'Custom NVIDIA',
+            options: {
+              baseURL: 'https://example.com/v1',
+              region: 'us-west-2'
+            },
+            models: {
+              'existing-model': {
+                name: 'Existing Model'
+              }
+            }
+          }
+        }
+      })
+
+      const existingCache = JSON.stringify({
+        lastRefresh: Date.now() - 25 * 60 * 60 * 1000,
+        modelsHash: 'test-hash-value'
+      })
+
+      vi.mocked(fs.readFile).mockImplementation(async (filePath: string) => {
+        if (filePath.includes('auth.json')) {
+          return Promise.reject(Object.assign(new Error('File not found'), { code: 'ENOENT' }))
+        }
+        if (filePath.includes('nim-sync-cache.json')) {
+          return Promise.resolve(existingCache)
+        }
+        return Promise.resolve(existingConfig)
+      })
+
+      const plugin = await syncNIMModels(mockPluginAPI)
+      const changed = await plugin.updateConfig?.([
+        { id: 'existing-model', name: 'Existing Model' }
+      ])
+
+      expect(changed).toBe(true)
+
+      const configWrite = vi.mocked(fs.writeFile).mock.calls.find(([filePath]) =>
+        String(filePath).includes('opencode.jsonc')
+      )
+      const updatedConfig = JSON.parse(String(configWrite?.[1]))
+
+      expect(updatedConfig.provider.nim.npm).toBe('@ai-sdk/openai-compatible')
+      expect(updatedConfig.provider.nim.name).toBe('NVIDIA NIM')
+      expect(updatedConfig.provider.nim.options.baseURL).toBe('https://integrate.api.nvidia.com/v1')
+      expect(updatedConfig.provider.nim.options.region).toBe('us-west-2')
     })
 
     it('writes the cache file to the cache directory instead of the config directory', async () => {

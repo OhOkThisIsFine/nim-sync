@@ -193,6 +193,30 @@ export async function syncNIMModels(api: PluginAPI): Promise<{
     return hash.digest('hex')
   }
 
+  const sortKeysDeep = (value: unknown): unknown => {
+    if (Array.isArray(value)) {
+      return value.map(sortKeysDeep)
+    }
+
+    if (value && typeof value === 'object') {
+      return Object.keys(value as Record<string, unknown>)
+        .sort()
+        .reduce<Record<string, unknown>>((acc, key) => {
+          acc[key] = sortKeysDeep((value as Record<string, unknown>)[key])
+          return acc
+        }, {})
+    }
+
+    return value
+  }
+
+  const managedNIMConfigMatches = (
+    currentConfig: NonNullable<OpenCodeConfig['provider']>['nim'] | undefined,
+    nextConfig: NonNullable<OpenCodeConfig['provider']>['nim']
+  ): boolean => {
+    return JSON.stringify(sortKeysDeep(currentConfig ?? null)) === JSON.stringify(sortKeysDeep(nextConfig))
+  }
+
   const shouldRefresh = async (): Promise<boolean> => {
     try {
       const config = api.config.get<OpenCodeConfig>()
@@ -205,13 +229,7 @@ export async function syncNIMModels(api: PluginAPI): Promise<{
 
   const exposedShouldRefresh = shouldRefresh
   const updateConfig = async (models: NIMModel[]): Promise<boolean> => {
-    let config: OpenCodeConfig | null = null
-    let canPatchConfigInPlace = true
-
-    try { config = await readJSONC<OpenCodeConfig>(getConfigPath()) } catch {
-      config = null
-      canPatchConfigInPlace = false
-    }
+    const config = await readJSONC<OpenCodeConfig>(getConfigPath())
 
     const newModels = models.reduce((acc, m) => {
       acc[m.id] = { name: m.name, options: config?.provider?.nim?.models?.[m.id]?.options || {} }
@@ -219,12 +237,6 @@ export async function syncNIMModels(api: PluginAPI): Promise<{
     }, {} as Record<string, { name: string; options: Record<string, unknown> }>)
     const modelsHash = hashModels(models)
     const cache = await readCache()
-    if (cache?.modelsHash === modelsHash) {
-      try {
-        await writeCache({ ...cache, lastRefresh: Date.now(), modelsHash, baseURL: NIM_BASE_URL })
-      } catch { /* non-fatal */ }
-      return false
-    }
 
     const updatedNIMConfig: NonNullable<OpenCodeConfig['provider']>['nim'] = {
       ...config?.provider?.nim,
@@ -235,6 +247,14 @@ export async function syncNIMModels(api: PluginAPI): Promise<{
         baseURL: NIM_BASE_URL
       },
       models: newModels
+    }
+    const managedConfigChanged = !managedNIMConfigMatches(config?.provider?.nim, updatedNIMConfig)
+
+    if (cache?.modelsHash === modelsHash && !managedConfigChanged) {
+      try {
+        await writeCache({ ...cache, lastRefresh: Date.now(), modelsHash, baseURL: NIM_BASE_URL })
+      } catch { /* non-fatal */ }
+      return false
     }
 
     let releaseLockFn: (() => Promise<void>) | null = null
@@ -253,11 +273,7 @@ export async function syncNIMModels(api: PluginAPI): Promise<{
       if (!validation.valid) {
         console.warn('[NIM-Sync] Config validation warnings:', validation.errors)
       }
-      if (canPatchConfigInPlace) {
-        await updateJSONCPath(getConfigPath(), ['provider', 'nim'], updatedNIMConfig, { backup: true, createBackupDir: true })
-      } else {
-        await writeJSONC(getConfigPath(), updatedConfig, { backup: true, createBackupDir: true })
-      }
+      await updateJSONCPath(getConfigPath(), ['provider', 'nim'], updatedNIMConfig, { backup: true, createBackupDir: true })
       try { await writeCache({ lastRefresh: Date.now(), modelsHash, baseURL: NIM_BASE_URL }) } catch { /* non-fatal */ }
       return true
     } catch (e) {

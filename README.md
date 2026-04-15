@@ -13,19 +13,25 @@ A global OpenCode plugin that automatically synchronizes NVIDIA NIM models with 
 
 ## Installation
 
-1. Clone or copy this plugin to your global OpenCode plugins directory:
+Install the published plugin from npm through your OpenCode config.
+npm plugins are installed automatically using Bun at startup, so end users do not need to run `npm install`, build the plugin locally, or copy files into the plugins directory.
+If you are working from this repository before the package is published, use the local testing flow farther below instead.
 
-```bash
-# Windows
-cp nim-sync.ts %USERPROFILE%/.config/opencode/plugins/
+Add `opencode-nim-sync` to the `plugin` array in your global or project OpenCode config:
 
-# Linux/macOS
-cp nim-sync.ts ~/.config/opencode/plugins/
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["opencode-nim-sync"]
+}
 ```
 
-2. Ensure you have an NVIDIA API key either:
+After adding the plugin, restart OpenCode.
+Ensure you have an NVIDIA API key either:
    - Set `NVIDIA_API_KEY` environment variable
    - Run `/connect` in OpenCode to add NVIDIA credentials
+
+On startup, the plugin refreshes the NVIDIA model catalog in the background and registers `/nim-refresh` for manual updates.
 
 ## Configuration
 
@@ -71,12 +77,12 @@ You retain control over:
 npm install
 
 # Run tests
-npm test
+npm test -- --run
 
 # Run tests with coverage
-npm run test:coverage
+npm run test:coverage -- --run
 
-# Build TypeScript
+# Build the bundled plugin artifact
 npm run build
 
 # Type check
@@ -85,6 +91,10 @@ npm run typecheck
 # Lint
 npm run lint
 ```
+
+### Local Testing
+
+If you are testing the plugin before it is published to npm, you can still use the bundled artifact in `dist/nim-sync.mjs` with OpenCode's local plugin directory.
 
 ## Test-Driven Development
 
@@ -105,6 +115,10 @@ src/
 ├── lib/file-utils.ts        # File operations with JSONC support
 ├── types/index.ts          # TypeScript definitions
 └── __tests__/              # Test suites
+
+scripts/
+├── clean.mjs                # Cross-platform dist cleanup
+└── bundle.mjs               # Standalone plugin bundling
 ```
 
 ### Key Components
