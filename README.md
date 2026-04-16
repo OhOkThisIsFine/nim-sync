@@ -104,6 +104,7 @@ If you are testing from this repository instead of npm, point OpenCode at the lo
 This repository includes [`.github/workflows/publish.yml`](.github/workflows/publish.yml), which publishes to npm whenever you push a `v*` tag.
 On tag pushes, the workflow verifies that the tag matches `package.json`, then runs `npm ci`, tests, lint, typecheck, build, and `npm publish`.
 If you click `Run workflow` in GitHub Actions manually, the run is validation-only: it skips tag verification and skips publishing.
+The publish workflow uses Node 24 because npm trusted publishing requires Node 22.14.0 or higher.
 
 ### Current Status
 
@@ -125,6 +126,10 @@ To verify the trusted publisher from the CLI:
 ```bash
 npm trust list nim-sync
 ```
+
+If a GitHub Actions publish run fails with `E404`, check these two things first:
+- The workflow is using Node 22.14.0 or higher
+- The npm Trusted Publisher still exactly matches `EthanBerlant` / `nim-sync` / `publish.yml`
 
 ### Releasing a New Version
 

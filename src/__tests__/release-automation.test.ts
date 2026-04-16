@@ -12,6 +12,7 @@ describe('release automation', () => {
     expect(workflow).toContain("tags:\n      - 'v*'")
     expect(workflow).toContain('workflow_dispatch:')
     expect(workflow).toContain('id-token: write')
+    expect(workflow).toContain("node-version: '24'")
     expect(workflow).toContain('npm ci')
     expect(workflow).toContain('npm publish')
     expect(workflow).toContain('verify-release-tag.mjs')
@@ -35,6 +36,8 @@ describe('release automation', () => {
     expect(readme).toContain('npm trust list nim-sync')
     expect(readme).toContain('Run workflow')
     expect(readme).toContain('validation-only')
+    expect(readme).toContain('Node 22.14.0 or higher')
+    expect(readme).toContain('E404')
     expect(readme).not.toContain('opencode-nim-sync')
   })
 
