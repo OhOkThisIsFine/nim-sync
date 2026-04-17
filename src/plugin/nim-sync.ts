@@ -13,8 +13,9 @@ export async function syncNIMModels(api: PluginAPI): Promise<{
   init?: () => Promise<void>
   hooks?: Record<string, () => Promise<void>>
   getAPIKey?: () => Promise<string | null>
+  getNextRefreshDelay?: () => Promise<number>
   updateConfig?: (models: import('../types/index.js').NIMModel[]) => Promise<boolean>
-  refreshModels?: (force?: boolean) => Promise<void>
+  refreshModels?: (force?: boolean) => Promise<import('./nim-sync-service.js').NIMSyncRefreshResult>
   manualRefresh?: () => Promise<void>
   shouldRefresh?: () => Promise<boolean>
 }> {
@@ -49,6 +50,7 @@ export async function syncNIMModels(api: PluginAPI): Promise<{
     init,
     hooks,
     getAPIKey: service.getAPIKey,
+    getNextRefreshDelay: service.getNextRefreshDelay,
     updateConfig: service.updateConfig,
     refreshModels: service.refreshModels,
     manualRefresh: service.manualRefresh,

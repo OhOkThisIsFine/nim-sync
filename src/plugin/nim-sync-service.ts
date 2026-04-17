@@ -31,7 +31,13 @@ const ALLOWED_MODEL_PROPERTIES = new Set([
 ])
 
 type RefreshSource = 'background' | 'manual'
-type RefreshResult = 'attempted' | 'blocked-in-progress' | 'blocked-missing-api-key' | 'skipped'
+export type NIMSyncRefreshResult =
+  | 'updated'
+  | 'unchanged'
+  | 'failed'
+  | 'missing-api-key'
+  | 'skipped'
+  | 'in-progress'
 type RefreshCommandConfig = NonNullable<OpenCodeConfig['command']>[string]
 
 export interface NIMSyncToast {
@@ -47,8 +53,9 @@ export interface NIMSyncServiceOptions {
 
 export interface NIMSyncService {
   getAPIKey: () => Promise<string | null>
+  getNextRefreshDelay: () => Promise<number>
   updateConfig: (models: NIMModel[]) => Promise<boolean>
-  refreshModels: (force?: boolean) => Promise<void>
+  refreshModels: (force?: boolean) => Promise<NIMSyncRefreshResult>
   manualRefresh: () => Promise<void>
   shouldRefresh: () => Promise<boolean>
 }
@@ -271,6 +278,24 @@ export function createNIMSyncService(options: NIMSyncServiceOptions = {}): NIMSy
     }
   }
 
+  const getNextRefreshDelay = async (): Promise<number> => {
+    try {
+      const config = await (options.getConfigSnapshot?.() ?? defaultGetConfigSnapshot())
+      if (!config?.provider?.nim) {
+        return 0
+      }
+
+      const cache = await readCache()
+      if (!cache?.lastRefresh) {
+        return 0
+      }
+
+      return Math.max(0, CACHE_TTL_MS - (Date.now() - cache.lastRefresh))
+    } catch {
+      return 0
+    }
+  }
+
   const persistManagedConfigUpdates = async (
     configPath: string,
     updatedConfig: OpenCodeConfig,
@@ -395,7 +420,7 @@ export function createNIMSyncService(options: NIMSyncServiceOptions = {}): NIMSy
     return true
   }
 
-  const runRefreshModels = async (force = false, source: RefreshSource = 'background'): Promise<RefreshResult> => {
+  const runRefreshModels = async (force = false, source: RefreshSource = 'background'): Promise<NIMSyncRefreshResult> => {
     if (refreshInProgress) {
       if (source === 'manual') {
         showToast({
@@ -404,7 +429,7 @@ export function createNIMSyncService(options: NIMSyncServiceOptions = {}): NIMSy
           variant: 'info'
         })
       }
-      return 'blocked-in-progress'
+      return 'in-progress'
     }
     refreshInProgress = true
     let apiKey: string | null = null
@@ -414,33 +439,34 @@ export function createNIMSyncService(options: NIMSyncServiceOptions = {}): NIMSy
       apiKey = await getAPIKey()
       if (!apiKey) {
         showToast({ title: 'NVIDIA API Key Required', message: 'Run /connect to add your NVIDIA API key', variant: 'error' })
-        return 'blocked-missing-api-key'
+        return 'missing-api-key'
       }
       const models = await fetchModels(apiKey)
       if (models.length === 0) {
         showToast({ title: 'No Models Available', message: 'NVIDIA API returned no models.', variant: 'error' })
-        return 'attempted'
+        return 'failed'
       }
       const changed = await updateConfig(models)
       if (changed) {
         showToast({ title: 'NVIDIA NIM Models Updated', message: models.length + ' models synchronized', variant: 'success' })
+        return 'updated'
       } else if (source === 'manual') {
         showToast({ title: 'NVIDIA NIM Already Up To Date', message: 'No model changes found.', variant: 'info' })
       }
-      return 'attempted'
+      return 'unchanged'
     } catch (error) {
       const msg = sanitizeErrorMessage(error instanceof Error ? error.message : 'Unknown error', apiKey)
       console.error('[NIM-Sync] Model refresh failed:', msg)
       showToast({ title: 'NVIDIA Sync Failed', message: msg, variant: 'error' })
       try { await writeCache({ modelsHash: '', lastError: msg, baseURL: NIM_BASE_URL }) } catch { /* ignore */ }
-      return 'attempted'
+      return 'failed'
     } finally {
       refreshInProgress = false
     }
   }
 
-  const refreshModels = async (force = false): Promise<void> => {
-    await runRefreshModels(force, 'background')
+  const refreshModels = async (force = false): Promise<NIMSyncRefreshResult> => {
+    return runRefreshModels(force, 'background')
   }
 
   const manualRefresh = async (): Promise<void> => {
@@ -451,13 +477,14 @@ export function createNIMSyncService(options: NIMSyncServiceOptions = {}): NIMSy
       return
     }
     const result = await runRefreshModels(true, 'manual')
-    if (result === 'attempted') {
+    if (result === 'updated' || result === 'unchanged' || result === 'failed') {
       lastManualRefresh = now
     }
   }
 
   return {
     getAPIKey,
+    getNextRefreshDelay,
     updateConfig,
     refreshModels,
     manualRefresh,

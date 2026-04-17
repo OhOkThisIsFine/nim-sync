@@ -136,6 +136,78 @@ describe('NIM Sync Unit Tests', () => {
     })
   })
 
+  describe('getNextRefreshDelay', () => {
+    it('returns the remaining TTL before the next automatic refresh', async () => {
+      const now = 1_700_000_000_000
+      const dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(now)
+
+      mockPluginAPI.config.get = vi.fn(() => ({
+        provider: {
+          nim: {
+            models: {
+              'existing-model': {
+                name: 'Existing Model'
+              }
+            }
+          }
+        }
+      })) as any
+
+      const recentCache = JSON.stringify({
+        lastRefresh: now - 60 * 60 * 1000,
+        modelsHash: 'test-hash-value'
+      })
+
+      vi.mocked(fs.readFile).mockImplementation(async (filePath: string) => {
+        if (filePath.includes('nim-sync-cache.json')) {
+          return Promise.resolve(recentCache)
+        }
+        return Promise.resolve('{}')
+      })
+
+      const plugin = await syncNIMModels(mockPluginAPI)
+
+      await expect(plugin.getNextRefreshDelay?.()).resolves.toBe(23 * 60 * 60 * 1000)
+
+      dateNowSpy.mockRestore()
+    })
+
+    it('returns zero when the cached models are already stale', async () => {
+      const now = 1_700_000_000_000
+      const dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(now)
+
+      mockPluginAPI.config.get = vi.fn(() => ({
+        provider: {
+          nim: {
+            models: {
+              'existing-model': {
+                name: 'Existing Model'
+              }
+            }
+          }
+        }
+      })) as any
+
+      const expiredCache = JSON.stringify({
+        lastRefresh: now - 25 * 60 * 60 * 1000,
+        modelsHash: 'test-hash-value'
+      })
+
+      vi.mocked(fs.readFile).mockImplementation(async (filePath: string) => {
+        if (filePath.includes('nim-sync-cache.json')) {
+          return Promise.resolve(expiredCache)
+        }
+        return Promise.resolve('{}')
+      })
+
+      const plugin = await syncNIMModels(mockPluginAPI)
+
+      await expect(plugin.getNextRefreshDelay?.()).resolves.toBe(0)
+
+      dateNowSpy.mockRestore()
+    })
+  })
+
   describe('updateConfig', () => {
     it('prefers opencode.json when that is the existing OpenCode config file', async () => {
       const fileNotFound = Object.assign(new Error('File not found'), { code: 'ENOENT' })
