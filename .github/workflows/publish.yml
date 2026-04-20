@@ -22,7 +22,6 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: '24'
-          registry-url: 'https://registry.npmjs.org'
 
       - name: Verify release tag matches package version
         if: github.event_name == 'push'
@@ -46,6 +45,5 @@ jobs:
       - name: Publish to npm
         if: github.event_name == 'push'
         run: |
-          sed -i '/^\/\/registry.npmjs.org\/:_authToken/d' "$NPM_CONFIG_USERCONFIG"
-          unset NODE_AUTH_TOKEN
+          echo "registry=https://registry.npmjs.org/" > ~/.npmrc
           npm publish --access public
