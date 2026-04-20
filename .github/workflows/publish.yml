@@ -21,8 +21,12 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '24'
           package-manager-cache: false
+
+      - name: Verify release tag matches package version
+        if: github.event_name == 'push'
+        run: node scripts/verify-release-tag.mjs
 
       - name: Install dependencies
         run: npm ci
@@ -40,4 +44,5 @@ jobs:
         run: npm run build
 
       - name: Publish to npm
+        if: github.event_name == 'push'
         run: npm publish --access public
