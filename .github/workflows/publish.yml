@@ -22,6 +22,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '24'
+          registry-url: https://registry.npmjs.org
           package-manager-cache: false
 
       - name: Verify release tag matches package version
@@ -45,4 +46,4 @@ jobs:
 
       - name: Publish to npm
         if: github.event_name == 'push'
-        run: npm publish --access public
+        run: rm -f ~/.npmrc && npm publish --access public
