@@ -1,6 +1,6 @@
 {
   "name": "nim-sync",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "description": "OpenCode plugin to sync NVIDIA NIM models automatically",
   "main": "dist/server.mjs",
   "types": "dist/plugin/opencode-server.d.ts",
