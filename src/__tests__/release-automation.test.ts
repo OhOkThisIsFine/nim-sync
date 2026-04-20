@@ -4,10 +4,10 @@ import { describe, expect, it } from "vitest";
 
 describe("release automation", () => {
   it("defines a tag-driven GitHub Actions publish workflow using npm trusted publishing", async () => {
-    const workflow = await fs.readFile(
+    const workflow = (await fs.readFile(
       path.join(process.cwd(), ".github", "workflows", "publish.yml"),
       "utf-8",
-    );
+    )).replace(/\r\n/g, "\n");
 
     expect(workflow).toContain("tags:\n      - 'v*'");
     expect(workflow).toContain("workflow_dispatch:");
