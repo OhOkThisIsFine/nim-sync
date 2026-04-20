@@ -24,7 +24,7 @@ jobs:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
 
-    - name: Verify release tag matches package version
+      - name: Verify release tag matches package version
         if: github.event_name == 'push'
         run: node scripts/verify-release-tag.mjs
 
