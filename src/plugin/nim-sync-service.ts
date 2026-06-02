@@ -375,6 +375,9 @@ export function createNIMSyncService(
       if (!config?.provider?.nim) return true;
       const cache = await readCache();
       if (!cache?.lastRefresh) return true;
+      // If the last write recorded a fetch failure with no valid models, bypass the TTL
+      // so the scheduled retry backoff (15 min / 60 min) can actually re-fetch.
+      if (cache.lastError && cache.modelsHash === "") return true;
       return Date.now() - cache.lastRefresh > CACHE_TTL_MS;
     } catch {
       return true;

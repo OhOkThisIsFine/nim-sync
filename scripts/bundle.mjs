@@ -15,5 +15,5 @@ await build({
     ".js": ".mjs",
   },
   sourcemap: true,
-  legalComments: "none",
+  legalComments: "eof",
 });

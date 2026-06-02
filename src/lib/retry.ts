@@ -2,6 +2,8 @@
  * Exponential backoff retry utility for API calls.
  */
 
+import { NVIDIAApiError } from "../types/index.js";
+
 export interface RetryOptions {
   /** Maximum number of retry attempts (default: 3) */
   maxRetries?: number;
@@ -173,7 +175,7 @@ export async function retryableFetch(
       });
 
       if (!response.ok) {
-        throw { statusCode: response.status, statusText: response.statusText };
+        throw new NVIDIAApiError(response.status, response.statusText);
       }
 
       return response;

@@ -156,6 +156,75 @@ describe("NIM Sync Unit Tests", () => {
 
       expect(mockFetch).toHaveBeenCalled();
     });
+
+    it("returns true within TTL when cache has lastError and empty modelsHash (error state bypasses TTL)", async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({ data: [{ id: "model-1", name: "Model 1" }] }),
+      });
+      global.fetch = mockFetch;
+
+      mockPluginAPI.config.get = vi.fn(() => ({
+        provider: { nim: { models: {} } },
+      })) as any;
+
+      // Simulate a failure cache: fresh lastRefresh but empty modelsHash + lastError
+      const failureCache = JSON.stringify({
+        lastRefresh: Date.now(),
+        modelsHash: "",
+        lastError: "Network error",
+      });
+      vi.mocked(fs.readFile).mockImplementation(async (filePath: string) => {
+        if (filePath.includes("auth.json")) {
+          return Promise.reject(
+            Object.assign(new Error("File not found"), { code: "ENOENT" }),
+          );
+        }
+        return Promise.resolve(failureCache);
+      });
+
+      const plugin = await syncNIMModels(mockPluginAPI);
+      await plugin.init?.();
+      await flushAsyncWork();
+
+      // Despite a fresh lastRefresh, the error state must bypass TTL and trigger a re-fetch
+      expect(mockFetch).toHaveBeenCalled();
+    });
+
+    it("returns false within TTL when cache has valid modelsHash and no lastError", async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({ data: [{ id: "model-1", name: "Model 1" }] }),
+      });
+      global.fetch = mockFetch;
+
+      mockPluginAPI.config.get = vi.fn(() => ({
+        provider: { nim: { models: {} } },
+      })) as any;
+
+      // Simulate a successful cache: fresh lastRefresh, valid modelsHash, no lastError
+      const successCache = JSON.stringify({
+        lastRefresh: Date.now(),
+        modelsHash: "abc123",
+      });
+      vi.mocked(fs.readFile).mockImplementation(async (filePath: string) => {
+        if (filePath.includes("auth.json")) {
+          return Promise.reject(
+            Object.assign(new Error("File not found"), { code: "ENOENT" }),
+          );
+        }
+        return Promise.resolve(successCache);
+      });
+
+      const plugin = await syncNIMModels(mockPluginAPI);
+      await plugin.init?.();
+      await flushAsyncWork();
+
+      // Within TTL with a valid cache and no error, should not re-fetch
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
   });
 
   describe("getNextRefreshDelay", () => {

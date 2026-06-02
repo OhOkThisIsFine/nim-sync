@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { withRetry, retryableFetch } from "../lib/retry.js";
+import { NVIDIAApiError } from "../types/index.js";
 
 describe("withRetry", () => {
   it("succeeds on first attempt", async () => {
@@ -153,6 +154,27 @@ describe("retryableFetch", () => {
     await expect(
       retryableFetch("test-key", "https://api.example.com", "/models"),
     ).rejects.toThrow();
+  });
+
+  it("rejects with NVIDIAApiError preserving status code and text on non-ok response", async () => {
+    const mockResponse = {
+      ok: false,
+      status: 401,
+      statusText: "Unauthorized",
+    };
+    fetchSpy.mockResolvedValue(mockResponse as unknown as Response);
+
+    const error = await retryableFetch(
+      "test-key",
+      "https://api.example.com",
+      "/models",
+    ).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(NVIDIAApiError);
+    expect((error as NVIDIAApiError).statusCode).toBe(401);
+    expect((error as NVIDIAApiError).statusText).toBe("Unauthorized");
+    expect((error as NVIDIAApiError).message).toContain("401");
+    expect((error as NVIDIAApiError).message).toContain("Unauthorized");
   });
 
   it("retries on 429", async () => {

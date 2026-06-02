@@ -371,8 +371,11 @@ async function cleanupOldBackups(
 ): Promise<void> {
   try {
     const files = await fs.readdir(backupDir);
+    const backupPattern = new RegExp(
+      `^${baseName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.\\d+\\.bak$`,
+    );
     const backups = files
-      .filter((f) => f.startsWith(baseName) && f.endsWith(".bak"))
+      .filter((f) => backupPattern.test(f))
       .map((f) => ({
         name: f,
         // Extract timestamp from filename like "file.json.1234567890.bak"

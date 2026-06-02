@@ -32,3 +32,10 @@ yarn-error.log*
 *.tmp
 .cache/
 .opencode/
+
+# Agent / remediation artifacts
+.agent/
+.remediation-artifacts/
+remediation-report.md
+remediation-report.json
+remediation-outcomes.json

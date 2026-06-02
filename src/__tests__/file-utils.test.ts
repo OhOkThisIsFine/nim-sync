@@ -142,6 +142,45 @@ describe("File Utils", () => {
       expect(backupDeletions.length).toBe(5);
     });
 
+    it("does not delete opencode.jsonc backups when cleaning opencode.json backups", async () => {
+      const now = Date.now();
+      // 6 opencode.json backups (one beyond MAX_BACKUPS=5) + 2 opencode.jsonc backups
+      const jsonBackups = Array.from(
+        { length: 6 },
+        (_, i) => `opencode.json.${now - i * 1000}.bak`,
+      );
+      const jsoncBackups = [
+        `opencode.jsonc.${now - 10000}.bak`,
+        `opencode.jsonc.${now - 20000}.bak`,
+      ];
+      vi.mocked(fs.readdir).mockResolvedValue(
+        [...jsonBackups, ...jsoncBackups] as any,
+      );
+      vi.mocked(fs.mkdir).mockResolvedValue(undefined);
+      vi.mocked(fs.writeFile).mockResolvedValue(undefined);
+      vi.mocked(fs.rename).mockResolvedValue(undefined);
+      vi.mocked(fs.access).mockResolvedValue(undefined);
+      vi.mocked(fs.copyFile).mockResolvedValue(undefined);
+      vi.mocked(fs.unlink).mockResolvedValue(undefined);
+
+      await atomicWrite("/test/opencode.json", "content", {
+        backup: true,
+        createBackupDir: true,
+      });
+
+      const unlinkCalls = vi.mocked(fs.unlink).mock.calls;
+      const backupDeletions = unlinkCalls.filter((call) =>
+        String(call[0]).endsWith(".bak"),
+      );
+      // Only the 1 excess opencode.json backup should be deleted
+      expect(backupDeletions.length).toBe(1);
+      // No opencode.jsonc backup should be touched
+      const jsoncDeletions = backupDeletions.filter((call) =>
+        String(call[0]).includes("opencode.jsonc"),
+      );
+      expect(jsoncDeletions.length).toBe(0);
+    });
+
     it("handles backup cleanup failures gracefully", async () => {
       vi.mocked(fs.readdir).mockRejectedValue(
         new Error("Directory read failed"),
