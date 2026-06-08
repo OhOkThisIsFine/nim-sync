@@ -171,21 +171,28 @@ describe("Hook Execution Tests", () => {
   describe("concurrent hook execution", () => {
     it("deduplicates refresh when multiple hooks fire simultaneously", async () => {
       let fetchCount = 0;
-      const mockFetch = vi.fn(async () => {
+      const mockFetch = vi.fn((url: string) => {
         fetchCount++;
-        await new Promise((resolve) => setTimeout(resolve, 50));
-        return {
-          ok: true,
-          json: () =>
-            Promise.resolve({
-              data: [
-                {
-                  id: "meta/llama-3.1-70b-instruct",
-                  name: "Meta Llama 3.1 70B Instruct",
-                },
-              ],
-            }),
-        };
+        if (typeof url === "string" && url.includes("/chat/completions"))
+          return Promise.resolve({ ok: false, status: 404 });
+        return new Promise((resolve) =>
+          setTimeout(
+            () =>
+              resolve({
+                ok: true,
+                json: () =>
+                  Promise.resolve({
+                    data: [
+                      {
+                        id: "meta/llama-3.1-70b-instruct",
+                        name: "Meta Llama 3.1 70B Instruct",
+                      },
+                    ],
+                  }),
+              }),
+            50,
+          ),
+        );
       });
       global.fetch = mockFetch;
 
@@ -197,8 +204,8 @@ describe("Hook Execution Tests", () => {
 
       await Promise.all([hook1, hook2]);
 
-      // Should only fetch once due to deduplication
-      expect(fetchCount).toBe(1);
+      // Should only fetch once each (models + probe) due to deduplication
+      expect(fetchCount).toBe(2); // 1 models + 1 probe
     });
   });
 });

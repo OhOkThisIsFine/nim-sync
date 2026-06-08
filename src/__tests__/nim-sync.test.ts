@@ -64,16 +64,20 @@ describe("NIM Sync Unit Tests", () => {
         configurable: true,
       });
 
-      const mockFetch = vi.fn().mockResolvedValue({
-        ok: true,
-        json: () =>
-          Promise.resolve({ data: [{ id: "model-1", name: "Model 1" }] }),
+      const mockFetch = vi.fn((url: string) => {
+        if (typeof url === "string" && url.includes("/chat/completions"))
+          return Promise.resolve({ ok: false, status: 404 });
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({ data: [{ id: "model-1", name: "Model 1" }] }),
+        });
       });
       global.fetch = mockFetch;
 
       const plugin = await syncNIMModels(mockPluginAPI);
       await plugin.init?.();
-      await vi.waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2));
 
       Object.defineProperty(process, "platform", {
         value: originalPlatform,
@@ -1082,10 +1086,15 @@ describe("NIM Sync Unit Tests", () => {
       );
     });
 
-    it("throws error when model name is empty", async () => {
-      const mockFetch = vi.fn().mockResolvedValue({
-        ok: true,
-        json: () => Promise.resolve({ data: [{ id: "valid-id", name: "" }] }),
+    it("derives name from id when API does not provide one", async () => {
+      const mockFetch = vi.fn((url: string) => {
+        if (typeof url === "string" && url.includes("/chat/completions"))
+          return Promise.resolve({ ok: false, status: 404 });
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({ data: [{ id: "meta/llama-3.1-8b-instruct", name: "" }] }),
+        });
       });
       global.fetch = mockFetch;
 
@@ -1093,12 +1102,7 @@ describe("NIM Sync Unit Tests", () => {
       await plugin.init?.();
       await flushAsyncWork();
 
-      expect(mockPluginAPI.tui.toast.show).toHaveBeenCalledWith(
-        expect.objectContaining({
-          title: "NVIDIA Sync Failed",
-          description: expect.stringContaining("invalid name"),
-        }),
-      );
+      expect(mockFetch).toHaveBeenCalledTimes(2);
     });
 
     it("throws error when duplicate model IDs are present", async () => {
@@ -1146,17 +1150,304 @@ describe("NIM Sync Unit Tests", () => {
     });
   });
 
+  describe("model probing", () => {
+    it("probes models for chat capability and stores results in config options", async () => {
+      const modelId = "meta/llama-3.1-70b-instruct";
+      const modelName = "Meta Llama 3.1 70B Instruct";
+
+      let modelsFetchResolve: ((value: unknown) => void) | null = null;
+      let probeFetchResolve: ((value: unknown) => void) | null = null;
+      const fetchCalls: string[] = [];
+
+      global.fetch = vi.fn((url: string) => {
+        fetchCalls.push(url);
+        if (url.includes("/models")) {
+          return new Promise((resolve) => {
+            modelsFetchResolve = resolve;
+          });
+        }
+        if (url.includes("/chat/completions")) {
+          return new Promise((resolve) => {
+            probeFetchResolve = resolve;
+          });
+        }
+        return Promise.resolve({ ok: false } as Response);
+      }) as any;
+
+      const existingConfig = JSON.stringify({
+        provider: { nim: { models: {} } },
+      });
+      vi.mocked(fs.readFile).mockImplementation(async (filePath: string) => {
+        if (filePath.includes("auth.json")) {
+          return Promise.reject(
+            Object.assign(new Error("File not found"), { code: "ENOENT" }),
+          );
+        }
+        return Promise.resolve(existingConfig);
+      });
+
+      const plugin = await syncNIMModels(mockPluginAPI);
+      const refreshPromise = plugin.refreshModels?.(true);
+      await flushAsyncWork();
+
+      modelsFetchResolve?.({
+        ok: true,
+        json: () =>
+          Promise.resolve({ data: [{ id: modelId, name: modelName }] }),
+      });
+      await flushAsyncWork();
+
+      probeFetchResolve?.({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 },
+          }),
+        headers: new Headers(),
+        status: 200,
+      });
+      await flushAsyncWork();
+      await refreshPromise;
+
+      const configWrite = vi
+        .mocked(fs.writeFile)
+        .mock.calls.filter(([filePath]) =>
+          String(filePath).includes("opencode.json"),
+        )
+        .at(-1);
+      const updatedConfig = JSON.parse(String(configWrite?.[1] ?? "{}"));
+      const modelEntry = updatedConfig.provider.nim.models[modelId];
+
+      expect(modelEntry.options.nimProbeChatCapable).toBe(true);
+      expect(modelEntry.options.nimProbeReasoning).toBe(false);
+      expect(typeof modelEntry.options.nimProbeLatencyMs).toBe("number");
+    });
+
+    it("detects reasoning capability from usage.reasoning_tokens", async () => {
+      const modelId = "deepseek-ai/deepseek-r1";
+      const modelName = "DeepSeek R1";
+
+      let modelsFetchResolve: ((value: unknown) => void) | null = null;
+      let probeFetchResolve: ((value: unknown) => void) | null = null;
+
+      global.fetch = vi.fn((url: string) => {
+        if (url.includes("/models")) {
+          return new Promise((resolve) => {
+            modelsFetchResolve = resolve;
+          });
+        }
+        if (url.includes("/chat/completions")) {
+          return new Promise((resolve) => {
+            probeFetchResolve = resolve;
+          });
+        }
+        return Promise.resolve({ ok: false } as Response);
+      }) as any;
+
+      const existingConfig = JSON.stringify({
+        provider: { nim: { models: {} } },
+      });
+      vi.mocked(fs.readFile).mockImplementation(async (filePath: string) => {
+        if (filePath.includes("auth.json")) {
+          return Promise.reject(
+            Object.assign(new Error("File not found"), { code: "ENOENT" }),
+          );
+        }
+        return Promise.resolve(existingConfig);
+      });
+
+      const plugin = await syncNIMModels(mockPluginAPI);
+      const refreshPromise = plugin.refreshModels?.(true);
+      await flushAsyncWork();
+
+      modelsFetchResolve?.({
+        ok: true,
+        json: () =>
+          Promise.resolve({ data: [{ id: modelId, name: modelName }] }),
+      });
+      await flushAsyncWork();
+
+      probeFetchResolve?.({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            usage: {
+              prompt_tokens: 2,
+              completion_tokens: 1,
+              total_tokens: 3,
+              reasoning_tokens: 128,
+            },
+          }),
+        headers: new Headers(),
+        status: 200,
+      });
+      await flushAsyncWork();
+      await refreshPromise;
+
+      const configWrite = vi
+        .mocked(fs.writeFile)
+        .mock.calls.filter(([filePath]) =>
+          String(filePath).includes("opencode.json"),
+        )
+        .at(-1);
+      const updatedConfig = JSON.parse(String(configWrite?.[1] ?? "{}"));
+      const modelEntry = updatedConfig.provider.nim.models[modelId];
+
+      expect(modelEntry.options.nimProbeReasoning).toBe(true);
+    });
+
+    it("marks non-chat models (embedding, safety) as not chat capable", async () => {
+      const modelId = "nvidia/nv-embedqa-e5-v5";
+      const modelName = "NV-EmbedQA-E5-v5";
+
+      let modelsFetchResolve: ((value: unknown) => void) | null = null;
+      let probeFetchResolve: ((value: unknown) => void) | null = null;
+
+      global.fetch = vi.fn((url: string) => {
+        if (url.includes("/models")) {
+          return new Promise((resolve) => {
+            modelsFetchResolve = resolve;
+          });
+        }
+        if (url.includes("/chat/completions")) {
+          return new Promise((resolve) => {
+            probeFetchResolve = resolve;
+          });
+        }
+        return Promise.resolve({ ok: false } as Response);
+      }) as any;
+
+      const existingConfig = JSON.stringify({
+        provider: { nim: { models: {} } },
+      });
+      vi.mocked(fs.readFile).mockImplementation(async (filePath: string) => {
+        if (filePath.includes("auth.json")) {
+          return Promise.reject(
+            Object.assign(new Error("File not found"), { code: "ENOENT" }),
+          );
+        }
+        return Promise.resolve(existingConfig);
+      });
+
+      const plugin = await syncNIMModels(mockPluginAPI);
+      const refreshPromise = plugin.refreshModels?.(true);
+      await flushAsyncWork();
+
+      modelsFetchResolve?.({
+        ok: true,
+        json: () =>
+          Promise.resolve({ data: [{ id: modelId, name: modelName }] }),
+      });
+      await flushAsyncWork();
+
+      probeFetchResolve?.({
+        ok: true,
+        status: 404,
+        headers: new Headers(),
+        json: () => Promise.resolve({}),
+      });
+      await flushAsyncWork();
+      await refreshPromise;
+
+      const configWrite = vi
+        .mocked(fs.writeFile)
+        .mock.calls.filter(([filePath]) =>
+          String(filePath).includes("opencode.json"),
+        )
+        .at(-1);
+      const updatedConfig = JSON.parse(String(configWrite?.[1] ?? "{}"));
+      const modelEntry = updatedConfig.provider.nim.models[modelId];
+
+      expect(modelEntry.options.nimProbeChatCapable).toBe(false);
+      expect(modelEntry.options.nimProbeReasoning).toBe(false);
+    });
+
+    it("continues successfully when probe fails", async () => {
+      const modelId = "meta/llama-3.1-70b-instruct";
+      const modelName = "Meta Llama 3.1 70B Instruct";
+
+      let modelsFetchResolve: ((value: unknown) => void) | null = null;
+      let probeFetchReject: ((reason: Error) => void) | null = null;
+
+      global.fetch = vi.fn((url: string) => {
+        if (url.includes("/models")) {
+          return new Promise((resolve) => {
+            modelsFetchResolve = resolve;
+          });
+        }
+        if (url.includes("/chat/completions")) {
+          return new Promise((_resolve, reject) => {
+            probeFetchReject = reject;
+          });
+        }
+        return Promise.resolve({ ok: false } as Response);
+      }) as any;
+
+      const existingConfig = JSON.stringify({
+        provider: { nim: { models: {} } },
+      });
+      vi.mocked(fs.readFile).mockImplementation(async (filePath: string) => {
+        if (filePath.includes("auth.json")) {
+          return Promise.reject(
+            Object.assign(new Error("File not found"), { code: "ENOENT" }),
+          );
+        }
+        return Promise.resolve(existingConfig);
+      });
+
+      const plugin = await syncNIMModels(mockPluginAPI);
+      const refreshPromise = plugin.refreshModels?.(true);
+      await flushAsyncWork();
+
+      modelsFetchResolve?.({
+        ok: true,
+        json: () =>
+          Promise.resolve({ data: [{ id: modelId, name: modelName }] }),
+      });
+      await flushAsyncWork();
+
+      probeFetchReject?.(new Error("Probe network error"));
+      await flushAsyncWork();
+      await refreshPromise;
+
+      const configWrite = vi
+        .mocked(fs.writeFile)
+        .mock.calls.filter(([filePath]) =>
+          String(filePath).includes("opencode.json"),
+        )
+        .at(-1);
+      const updatedConfig = JSON.parse(String(configWrite?.[1] ?? "{}"));
+      const modelEntry = updatedConfig.provider.nim.models[modelId];
+
+      expect(modelEntry.options.nimProbeChatCapable).toBeUndefined();
+      expect(mockPluginAPI.tui.toast.show).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: "NVIDIA NIM Models Updated",
+        }),
+      );
+    });
+  });
+
   describe("race condition prevention", () => {
     it("concurrent refreshModels calls share single refresh operation", async () => {
       let fetchCount = 0;
-      const mockFetch = vi.fn(async () => {
+      const mockFetch = vi.fn((url: string) => {
         fetchCount++;
-        await new Promise((resolve) => setTimeout(resolve, 50));
-        return {
-          ok: true,
-          json: () =>
-            Promise.resolve({ data: [{ id: "model-1", name: "Model 1" }] }),
-        };
+        if (typeof url === "string" && url.includes("/chat/completions"))
+          return Promise.resolve({ ok: false, status: 404 });
+        return new Promise((resolve) =>
+          setTimeout(
+            () =>
+              resolve({
+                ok: true,
+                json: () =>
+                  Promise.resolve({
+                    data: [{ id: "model-1", name: "Model 1" }],
+                  }),
+              }),
+            50,
+          ),
+        );
       });
       global.fetch = mockFetch;
 
@@ -1169,15 +1460,19 @@ describe("NIM Sync Unit Tests", () => {
       await Promise.all([promise1, promise2, promise3]);
       await new Promise((resolve) => setTimeout(resolve, 50));
 
-      expect(fetchCount).toBe(1);
+      expect(fetchCount).toBe(2); // 1 for models + 1 for probe
     });
   });
 
   describe("rate limiting for manual refresh", () => {
     it("shows warning when refresh is called too frequently", async () => {
-      const mockFetch = vi.fn().mockResolvedValue({
-        ok: true,
-        json: () => Promise.resolve({ data: [{ id: "m1", name: "M1" }] }),
+      const mockFetch = vi.fn((url: string) => {
+        if (typeof url === "string" && url.includes("/chat/completions"))
+          return Promise.resolve({ ok: false, status: 404 });
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ data: [{ id: "m1", name: "M1" }] }),
+        });
       });
       global.fetch = mockFetch;
 
@@ -1199,7 +1494,7 @@ describe("NIM Sync Unit Tests", () => {
         await nimRefreshHandler();
       }
 
-      expect(mockFetch).toHaveBeenCalledTimes(2); // init + manual refresh
+      expect(mockFetch).toHaveBeenCalledTimes(4); // init (models+probe) + manual (models+probe)
 
       // Second immediate refresh (without waiting 60 seconds) should be rate limited
       vi.clearAllMocks();
@@ -1219,13 +1514,20 @@ describe("NIM Sync Unit Tests", () => {
     });
 
   it("does not arm the rate limiter when a manual refresh is blocked by an in-progress refresh", async () => {
-    let resolveFetch: (() => void) | null = null;
-    const mockFetch = vi.fn().mockImplementation(async () => {
-      await new Promise<void>((resolve) => { resolveFetch = resolve; });
-      return {
-        ok: true,
-        json: () => Promise.resolve({ data: [{ id: "m1", name: "M1" }] }),
-      };
+    let resolveModelsFetch: ((value: unknown) => void) | null = null;
+    let resolveProbeFetch: ((value: unknown) => void) | null = null;
+    const mockFetch = vi.fn((url: string) => {
+      if (typeof url === "string" && url.includes("/chat/completions")) {
+        return new Promise<void>((resolve) => { resolveProbeFetch = resolve; }).then(
+          () => ({ ok: false, status: 404 }),
+        ) as any;
+      }
+      return new Promise<void>((resolve) => { resolveModelsFetch = resolve; }).then(
+        () => ({
+          ok: true,
+          json: () => Promise.resolve({ data: [{ id: "m1", name: "M1" }] }),
+        }),
+      ) as any;
     });
     global.fetch = mockFetch;
 
@@ -1274,7 +1576,8 @@ describe("NIM Sync Unit Tests", () => {
       }),
     );
 
-    resolveFetch?.();
+    resolveModelsFetch?.(null);
+    resolveProbeFetch?.(null);
     await inFlightRefresh;
   });
 

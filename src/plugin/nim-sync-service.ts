@@ -5,6 +5,7 @@ import type {
   OpenCodeConfig,
   CacheData,
   AuthConfig,
+  ProbeResult,
 } from "../types/index.js";
 import { NVIDIAApiError } from "../types/index.js";
 import { validateOpenCodeConfig } from "../types/schema.js";
@@ -29,20 +30,8 @@ import {
 
 const NIM_BASE_URL = "https://integrate.api.nvidia.com/v1";
 const CACHE_FILE_NAME = "nim-sync-cache.json";
-
-const ALLOWED_MODEL_PROPERTIES = new Set([
-  "id",
-  "name",
-  "description",
-  "model_type",
-  "quantization",
-  "created",
-  "owned_by",
-  "object",
-  "root",
-  "parent",
-  "permission",
-]);
+const PROBE_TIMEOUT_MS = 5_000;
+const PROBE_CONCURRENCY = 10;
 
 type RefreshSource = "background" | "manual";
 export type NIMSyncRefreshResult =
@@ -196,36 +185,18 @@ function validateAPIResponse(response: unknown): NIMModel[] {
       throw new Error("Invalid model at index " + i + ": not an object");
     if (typeof m.id !== "string" || m.id.length === 0)
       throw new Error("Invalid model at index " + i + ": invalid id");
-    if (typeof m.name !== "string" || m.name.length === 0)
-      throw new Error("Model " + m.id + ": invalid name");
     if (seenIds.has(m.id)) throw new Error("Duplicate model ID: " + m.id);
-    const unexpected = Object.keys(m).filter(
-      (k) => !ALLOWED_MODEL_PROPERTIES.has(k),
-    );
-    if (unexpected.length > 0)
-      console.warn(
-        "[NIM-Sync] Model " +
-          m.id +
-          " has unexpected props: [" +
-          unexpected.join(", ") +
-          "]",
-      );
     seenIds.add(m.id);
-      models.push({
-        id: m.id,
-        name: m.name,
-        description:
-          typeof m.description === "string" ? m.description : undefined,
-        model_type: typeof m.model_type === "string" ? m.model_type : undefined,
-        quantization:
-          typeof m.quantization === "string" ? m.quantization : undefined,
-        created: typeof m.created === "number" ? m.created : undefined,
-        owned_by: typeof m.owned_by === "string" ? m.owned_by : undefined,
-        object: typeof m.object === "string" ? m.object : undefined,
-        root: typeof m.root === "string" ? m.root : undefined,
-        parent: typeof m.parent === "string" ? m.parent : undefined,
-        permission: Array.isArray(m.permission) ? m.permission : undefined,
-      });
+    models.push({
+      id: m.id,
+      name:
+        typeof m.name === "string" && m.name.length > 0
+          ? m.name
+          : m.id.split("/").pop()?.replace(/-/g, " ") || m.id,
+      object: typeof m.object === "string" ? m.object : undefined,
+      created: typeof m.created === "number" ? m.created : undefined,
+      owned_by: typeof m.owned_by === "string" ? m.owned_by : undefined,
+    });
   }
   return models;
 }
@@ -282,6 +253,74 @@ const hashModels = (models: NIMModel[]): string => {
     JSON.stringify([...models].sort((a, b) => a.id.localeCompare(b.id))),
   );
   return hash.digest("hex");
+};
+
+const probeModel = async (
+  modelId: string,
+  apiKey: string,
+): Promise<ProbeResult | null> => {
+  const start = Date.now();
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
+  try {
+    const response = await fetch(NIM_BASE_URL + "/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer " + apiKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: modelId,
+        max_tokens: 1,
+        messages: [{ role: "user", content: "hi" }],
+      }),
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    const latencyMs = Date.now() - start;
+    if (response.status === 404 || response.status === 410) {
+      return {
+        chatCapable: false,
+        reasoning: false,
+        latencyMs,
+        probedAt: Date.now(),
+      };
+    }
+    if (!response.ok) return null;
+    const body = (await response.json()) as Record<string, unknown>;
+    const usage = body?.usage as Record<string, unknown> | undefined;
+    const hasReasoning = usage?.reasoning_tokens !== undefined;
+    return {
+      chatCapable: true,
+      reasoning: hasReasoning,
+      latencyMs,
+      probedAt: Date.now(),
+    };
+  } catch {
+    clearTimeout(timeoutId);
+    return null;
+  }
+};
+
+const probeModels = async (
+  models: NIMModel[],
+  apiKey: string,
+  existingResults?: Record<string, ProbeResult>,
+): Promise<Record<string, ProbeResult>> => {
+  const results: Record<string, ProbeResult> = { ...existingResults };
+  const toProbe = models.filter((m) => !results[m.id]);
+  for (let i = 0; i < toProbe.length; i += PROBE_CONCURRENCY) {
+    const batch = toProbe.slice(i, i + PROBE_CONCURRENCY);
+    const batchResults = await Promise.all(
+      batch.map((m) => probeModel(m.id, apiKey)),
+    );
+    for (let j = 0; j < batch.length; j++) {
+      if (batchResults[j]) {
+        results[batch[j].id] = batchResults[j]!;
+      }
+    }
+  }
+  return results;
 };
 
 const readCache = async (): Promise<CacheData | null> => {
@@ -490,7 +529,10 @@ export function createNIMSyncService(
     return true;
   };
 
-  const updateConfig = async (models: NIMModel[]): Promise<boolean> => {
+  const updateConfig = async (
+    models: NIMModel[],
+    probeResults?: Record<string, ProbeResult>,
+  ): Promise<boolean> => {
     const configPath = await getConfigFilePath();
     const config = await readJSONC<OpenCodeConfig>(configPath);
 
@@ -509,7 +551,7 @@ export function createNIMSyncService(
       }
     }
 
-    const newModels = models.reduce(
+    const baseModels = models.reduce(
       (acc, m) => {
         acc[m.id] = {
           name: m.name,
@@ -523,19 +565,19 @@ export function createNIMSyncService(
     const cache = await readCache();
     const refreshCommandCleanup = getManagedRefreshCommandCleanup(config || {});
 
-    const updatedNIMConfig: NonNullable<OpenCodeConfig["provider"]>["nim"] = {
-      ...config?.provider?.nim,
-      npm: "@ai-sdk/openai-compatible",
-      name: "NVIDIA NIM",
-      options: {
-        ...config?.provider?.nim?.options,
-        baseURL: NIM_BASE_URL,
-      },
-      models: newModels,
-    };
+    const noProbeModels = baseModels;
     const managedConfigChanged = !managedNIMConfigMatches(
       config?.provider?.nim,
-      updatedNIMConfig,
+      {
+        ...config?.provider?.nim,
+        npm: "@ai-sdk/openai-compatible",
+        name: "NVIDIA NIM",
+        options: {
+          ...config?.provider?.nim?.options,
+          baseURL: NIM_BASE_URL,
+        },
+        models: noProbeModels,
+      },
     );
     const managedCommandChanged = refreshCommandCleanup.removed;
 
@@ -550,12 +592,46 @@ export function createNIMSyncService(
           lastRefresh: Date.now(),
           modelsHash,
           baseURL: NIM_BASE_URL,
+          probeResults: probeResults ?? cache?.probeResults,
         });
       } catch {
         /* non-fatal */
       }
       return false;
     }
+
+    // Only include probe results when models actually changed
+    const newModels = models.reduce(
+      (acc, m) => {
+        const existingOptions =
+          config?.provider?.nim?.models?.[m.id]?.options || {};
+        const probe = probeResults?.[m.id];
+        acc[m.id] = {
+          name: m.name,
+          options: probe
+            ? {
+                ...existingOptions,
+                nimProbeChatCapable: probe.chatCapable,
+                nimProbeReasoning: probe.reasoning,
+                nimProbeLatencyMs: probe.latencyMs,
+              }
+            : existingOptions,
+        };
+        return acc;
+      },
+      {} as Record<string, { name: string; options: Record<string, unknown> }>,
+    );
+
+    const updatedNIMConfig: NonNullable<OpenCodeConfig["provider"]>["nim"] = {
+      ...config?.provider?.nim,
+      npm: "@ai-sdk/openai-compatible",
+      name: "NVIDIA NIM",
+      options: {
+        ...config?.provider?.nim?.options,
+        baseURL: NIM_BASE_URL,
+      },
+      models: newModels,
+    };
 
     const updatedConfig: OpenCodeConfig = {
       ...(config || {}),
@@ -577,11 +653,12 @@ export function createNIMSyncService(
         lastRefresh: Date.now(),
         modelsHash,
         baseURL: NIM_BASE_URL,
+        probeResults: probeResults ?? cache?.probeResults,
       });
-} catch {
-    /* non-fatal */
-  }
-  return true;
+    } catch {
+      /* non-fatal */
+    }
+    return true;
   };
 
   const runRefreshModels = async (
@@ -621,7 +698,14 @@ export function createNIMSyncService(
         });
         return "failed";
       }
-      const changed = await updateConfig(models);
+      const existingProbeResults = (await readCache())?.probeResults;
+      let probeResults: Record<string, ProbeResult> | undefined;
+      try {
+        probeResults = await probeModels(models, apiKey, existingProbeResults);
+      } catch {
+        // probe failures are non-fatal
+      }
+      const changed = await updateConfig(models, probeResults);
       if (changed) {
         showToast({
           title: "NVIDIA NIM Models Updated",

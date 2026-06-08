@@ -236,17 +236,21 @@ describe("User Journey: NVIDIA NIM Model Synchronization", () => {
     });
 
     it("manual refresh command triggers model fetch", async () => {
-      const mockFetch = vi.fn().mockResolvedValue({
-        ok: true,
-        json: () =>
-          Promise.resolve({
-            data: [
-              {
-                id: "meta/llama-3.1-70b-instruct",
-                name: "Meta Llama 3.1 70B Instruct",
-              },
-            ],
-          }),
+      const mockFetch = vi.fn((url: string) => {
+        if (typeof url === "string" && url.includes("/chat/completions"))
+          return Promise.resolve({ ok: false, status: 404 });
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              data: [
+                {
+                  id: "meta/llama-3.1-70b-instruct",
+                  name: "Meta Llama 3.1 70B Instruct",
+                },
+              ],
+            }),
+        });
       });
       global.fetch = mockFetch;
 
@@ -259,14 +263,14 @@ describe("User Journey: NVIDIA NIM Model Synchronization", () => {
       const plugin = await syncNIMModels(mockPluginAPI);
       await plugin.init?.();
       await vi.waitFor(() =>
-        expect(mockFetch.mock.calls.length).toBeGreaterThanOrEqual(1),
+        expect(mockFetch.mock.calls.length).toBeGreaterThanOrEqual(2),
       );
       await flushAsyncWork();
 
       vi.clearAllMocks();
       await refreshHandler();
 
-      await vi.waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2));
     }, 10000);
 
     it("manual refresh shows feedback when models are already up to date", async () => {
@@ -312,12 +316,16 @@ describe("User Journey: NVIDIA NIM Model Synchronization", () => {
         return Promise.resolve(currentConfig);
       });
 
-      const mockFetch = vi.fn().mockResolvedValue({
-        ok: true,
-        json: () =>
-          Promise.resolve({
-            data: [{ id: modelId, name: modelName }],
-          }),
+      const mockFetch = vi.fn((url: string) => {
+        if (typeof url === "string" && url.includes("/chat/completions"))
+          return Promise.resolve({ ok: false, status: 404 });
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              data: [{ id: modelId, name: modelName }],
+            }),
+        });
       });
       global.fetch = mockFetch;
 
@@ -335,7 +343,7 @@ describe("User Journey: NVIDIA NIM Model Synchronization", () => {
 
       await refreshHandler();
 
-      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(mockFetch).toHaveBeenCalledTimes(2);
       expect(mockPluginAPI.tui.toast.show).toHaveBeenCalledWith(
         expect.objectContaining({
           title: "NVIDIA NIM Already Up To Date",
@@ -385,14 +393,25 @@ describe("User Journey: NVIDIA NIM Model Synchronization", () => {
         return Promise.resolve(currentConfig);
       });
 
-      let resolveFetch: ((value: unknown) => void) | null = null;
-      const mockFetch = vi.fn().mockImplementation(
-        () =>
-          new Promise((resolve) => {
-            resolveFetch = resolve;
+      let resolveModelsFetch: ((value: unknown) => void) | null = null;
+      let resolveProbeFetch: ((value: unknown) => void) | null = null;
+      const mockFetch = vi.fn((url: string) => {
+        if (typeof url === "string" && url.includes("/chat/completions")) {
+          return new Promise<void>((resolve) => { resolveProbeFetch = resolve; }).then(
+            () => ({ ok: false, status: 404 }),
+          ) as any;
+        }
+        return new Promise<void>((resolve) => { resolveModelsFetch = resolve; }).then(
+          () => ({
+            ok: true,
+            json: () =>
+              Promise.resolve({
+                data: [{ id: modelId, name: modelName }],
+              }),
           }),
-      );
-      global.fetch = mockFetch as any;
+        ) as any;
+      });
+      global.fetch = mockFetch;
 
       let refreshHandler: () => Promise<void> = async () => {};
       mockPluginAPI.command.register = vi.fn((name, handler) => {
@@ -407,6 +426,7 @@ describe("User Journey: NVIDIA NIM Model Synchronization", () => {
       const inFlightRefresh = plugin.refreshModels?.(true);
       await flushAsyncWork();
 
+      // refreshModels is waiting on models fetch, so manual should show "in progress"
       await refreshHandler();
 
       expect(mockPluginAPI.tui.toast.show).toHaveBeenCalledWith(
@@ -417,13 +437,10 @@ describe("User Journey: NVIDIA NIM Model Synchronization", () => {
         }),
       );
 
-      resolveFetch?.({
-        ok: true,
-        json: () =>
-          Promise.resolve({
-            data: [{ id: modelId, name: modelName }],
-          }),
-      });
+      // Resolve models fetch first, then probe to complete the refresh
+      resolveModelsFetch?.(null);
+      await flushAsyncWork();
+      resolveProbeFetch?.(null);
 
       await inFlightRefresh;
     });
@@ -557,14 +574,19 @@ describe("User Journey: NVIDIA NIM Model Synchronization", () => {
     });
 
     it("generates different hashes for different model sets", async () => {
-      const mockFetch = vi
-        .fn()
-        .mockResolvedValueOnce({
-          ok: true,
-          json: () =>
-            Promise.resolve({ data: [{ id: "model-a", name: "Model A" }] }),
-        })
-        .mockResolvedValueOnce({
+      let callCount = 0;
+      const mockFetch = vi.fn((url: string) => {
+        if (typeof url === "string" && url.includes("/chat/completions"))
+          return Promise.resolve({ ok: false, status: 404 });
+        callCount++;
+        if (callCount === 1) {
+          return Promise.resolve({
+            ok: true,
+            json: () =>
+              Promise.resolve({ data: [{ id: "model-a", name: "Model A" }] }),
+          });
+        }
+        return Promise.resolve({
           ok: true,
           json: () =>
             Promise.resolve({
@@ -574,6 +596,7 @@ describe("User Journey: NVIDIA NIM Model Synchronization", () => {
               ],
             }),
         });
+      });
       global.fetch = mockFetch;
 
       const expiredCache = JSON.stringify({
@@ -594,13 +617,13 @@ describe("User Journey: NVIDIA NIM Model Synchronization", () => {
       await plugin1.init?.();
       await flushAsyncWork();
 
-      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(mockFetch).toHaveBeenCalledTimes(2); // models + probe(1 model)
 
       const plugin2 = await syncNIMModels(mockPluginAPI);
       await plugin2.init?.();
       await flushAsyncWork();
 
-      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(mockFetch).toHaveBeenCalledTimes(5); // plugin1 (models+probe) + plugin2 (models+2×probe)
     });
 
     it("forces refresh when provider.nim is missing", async () => {

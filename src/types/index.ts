@@ -1,15 +1,16 @@
 export interface NIMModel {
   id: string;
   name: string;
-  description?: string;
-  model_type?: string;
-  quantization?: string;
+  object?: string;
   created?: number;
   owned_by?: string;
-  object?: string;
-  root?: string;
-  parent?: string;
-  permission?: unknown[];
+}
+
+export interface ProbeResult {
+  chatCapable: boolean;
+  reasoning: boolean;
+  latencyMs: number;
+  probedAt: number;
 }
 
 export interface NIMApiResponse {
@@ -64,6 +65,7 @@ export interface CacheData {
   modelsHash: string;
   lastError?: string;
   baseURL?: string;
+  probeResults?: Record<string, ProbeResult>;
 }
 
 export interface PluginAPI {
