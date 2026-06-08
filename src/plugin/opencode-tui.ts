@@ -1,8 +1,11 @@
 import type {
   TuiPlugin,
+  TuiPluginApi,
   TuiPluginModule,
   TuiPromptRef,
+  TuiDialogSelectOption,
 } from "@opencode-ai/plugin/tui";
+import type { Model } from "@opencode-ai/sdk/v2";
 import {
   handlePromptSubmit,
   NIM_REFRESH_COMMAND_DESCRIPTION,
@@ -27,6 +30,73 @@ type SessionPromptSlotProps = {
   disabled?: boolean;
   on_submit?: () => void;
   ref?: (ref: TuiPromptRef | undefined) => void;
+};
+
+type ProbeMeta = {
+  latencyMs?: number;
+  chatCapable?: boolean;
+  reasoning?: boolean;
+};
+
+const getProbeMeta = (model: Model): ProbeMeta => {
+  const opts = model.options as Record<string, unknown> | undefined;
+  return {
+    latencyMs: opts?.nimProbeLatencyMs as number | undefined,
+    chatCapable: opts?.nimProbeChatCapable as boolean | undefined,
+    reasoning: opts?.nimProbeReasoning as boolean | undefined,
+  };
+};
+
+const formatFooter = (model: Model): string => {
+  const { latencyMs, chatCapable, reasoning } = getProbeMeta(model);
+
+  const badges: string[] = [];
+  if (latencyMs !== undefined) {
+    badges.push(`${latencyMs}ms`);
+  }
+  if (chatCapable !== undefined) {
+    badges.push(chatCapable ? "chat" : "no-chat");
+  }
+  if (reasoning !== undefined) {
+    badges.push(reasoning ? "reasoning" : "no-reasoning");
+  }
+  if (model.status !== "active") {
+    badges.push(model.status);
+  }
+  if (badges.length === 0) {
+    return "No probe data";
+  }
+  return badges.join(" | ");
+};
+
+const openModelList = (api: TuiPluginApi): void => {
+  const nimProvider = api.state.provider.find((p) => p.id === "nim");
+  if (!nimProvider || Object.keys(nimProvider.models).length === 0) {
+    api.ui.toast({
+      title: "NVIDIA NIM",
+      message: "No NIM models configured. Run /nim-refresh first.",
+      variant: "warning",
+    });
+    return;
+  }
+
+  const options: TuiDialogSelectOption<string>[] = Object.values(
+    nimProvider.models,
+  )
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((model) => ({
+      title: model.name,
+      value: model.id,
+      description: model.id,
+      footer: formatFooter(model),
+    }));
+
+  api.ui.dialog.replace(() =>
+    api.ui.DialogSelect({
+      title: "NVIDIA NIM Models",
+      options,
+    }),
+  );
 };
 
 const bindPromptRef = (
@@ -71,6 +141,15 @@ const tui: TuiPlugin = async (api) => {
       },
       onSelect: () => {
         void service.manualRefresh();
+      },
+    },
+    {
+      title: "List NIM models with status",
+      value: "nim.models",
+      description: "View all NIM models with latency and capability info",
+      category: "Plugin",
+      onSelect: () => {
+        openModelList(api);
       },
     },
     {
