@@ -1,9 +1,3 @@
-/**
- * Exponential backoff retry utility for API calls.
- */
-
-import { NVIDIAApiError } from "../types/index.js";
-
 export interface RetryOptions {
   /** Maximum number of retry attempts (default: 3) */
   maxRetries?: number;
@@ -17,6 +11,13 @@ export interface RetryOptions {
   retryStatusCodes?: number[];
   /** Request timeout in milliseconds (default: 30000) */
   timeoutMs?: number;
+  /** Callback fired on each retry attempt */
+  onRetry?: (info: {
+    attempt: number;
+    delay: number;
+    error: Error;
+    maxRetries: number;
+  }) => void;
 }
 
 const DEFAULT_OPTIONS: Required<RetryOptions> = {
@@ -26,16 +27,9 @@ const DEFAULT_OPTIONS: Required<RetryOptions> = {
   retryOnNetworkError: true,
   retryStatusCodes: [429, 500, 502, 503, 504],
   timeoutMs: 30_000,
+  onRetry: undefined!,
 };
 
-/**
- * Executes a function with exponential backoff retry logic.
- *
- * @param fn - Function to execute with retry logic
- * @param options - Retry configuration options
- * @returns Result of the function if successful
- * @throws Last error if all retries are exhausted
- */
 export async function withRetry<T>(
   fn: () => Promise<T>,
   options: RetryOptions = {},
@@ -45,49 +39,67 @@ export async function withRetry<T>(
 
   for (let attempt = 0; attempt <= opts.maxRetries; attempt++) {
     try {
-      return await fn();
+      const result = await fn();
+      if (attempt > 0) {
+        console.info(
+          "[NIM-Sync] Retry succeeded on attempt %d/%d",
+          attempt + 1,
+          opts.maxRetries,
+        );
+      }
+      return result;
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
 
-      // Determine if we should retry
       const shouldRetry = shouldRetryError(error, opts);
 
       if (!shouldRetry || attempt === opts.maxRetries) {
+        if (attempt > 0) {
+          console.error(
+            "[NIM-Sync] All %d retry attempts exhausted for: %s",
+            opts.maxRetries,
+            lastError.message,
+          );
+        }
         throw lastError;
       }
 
-      // Calculate delay with exponential backoff
-      const delay = Math.min(
+      const baseDelay = Math.min(
         opts.initialDelay * Math.pow(2, attempt),
         opts.maxDelay,
       );
+      const delay = Math.random() * baseDelay;
 
-      // Wait before retrying
+      console.warn(
+        "[NIM-Sync] Retry attempt %d/%d failed: %s. Retrying in %dms...",
+        attempt + 1,
+        opts.maxRetries,
+        lastError.message,
+        delay,
+      );
+
+      opts.onRetry?.({
+        attempt: attempt + 1,
+        delay,
+        error: lastError,
+        maxRetries: opts.maxRetries,
+      });
+
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
   }
 
-  // This should never be reached due to throw in loop, but TypeScript needs it
   throw lastError || new Error("Retry logic failed unexpectedly");
 }
 
-/**
- * Determines if an error should trigger a retry.
- *
- * @param error - The caught error
- * @param options - Retry configuration
- * @returns True if the error should trigger a retry
- */
 function shouldRetryError(
   error: unknown,
   options: Required<RetryOptions>,
 ): boolean {
-  // Network errors (timeouts, connection refused, etc.)
   if (options.retryOnNetworkError && isNetworkError(error)) {
     return true;
   }
 
-  // Check if it's an HTTP error with retryable status code
   if (isHttpError(error)) {
     const statusCode = getStatusCode(error);
     return options.retryStatusCodes.includes(statusCode);
@@ -96,35 +108,60 @@ function shouldRetryError(
   return false;
 }
 
-/**
- * Checks if an error is a network error (timeout, connection refused, etc.).
- */
-function isNetworkError(error: unknown): boolean {
+export function isNetworkError(error: unknown): boolean {
   if (!(error instanceof Error)) {
     return false;
   }
 
-  const networkErrorPatterns = [
-    "network",
-    "timeout",
-    "connection",
-    "fetch",
-    "abort",
+  const codePatterns = [
     "ECONNREFUSED",
+    "ENOTFOUND",
     "ETIMEDOUT",
+    "EAI_AGAIN",
+    "ENETUNREACH",
+    "ECONNRESET",
+    "EPIPE",
+    "ENETDOWN",
+    "ECONNABORTED",
+    "ABORT_ERR",
+    "ERR_NETWORK",
+    "UND_ERR_CONNECT_TIMEOUT",
+    "UND_ERR_HEADERS_TIMEOUT",
+    "UND_ERR_SOCKET",
   ];
 
-  const message = error.message.toLowerCase();
-  const name = error.name.toLowerCase();
+  const namePatterns = ["AbortError", "TimeoutError", "FetchError"];
 
-  return networkErrorPatterns.some(
-    (pattern) => message.includes(pattern) || name.includes(pattern),
-  );
+  if (
+    (error as NodeJS.ErrnoException).code &&
+    codePatterns.includes((error as NodeJS.ErrnoException).code!)
+  ) {
+    return true;
+  }
+
+  if (namePatterns.includes(error.name)) {
+    return true;
+  }
+
+  let cause: unknown = (error as Error & { cause?: unknown }).cause;
+  while (cause) {
+    if (cause instanceof Error) {
+      if (
+        (cause as NodeJS.ErrnoException).code &&
+        codePatterns.includes((cause as NodeJS.ErrnoException).code!)
+      ) {
+        return true;
+      }
+      if (namePatterns.includes(cause.name)) {
+        return true;
+      }
+    }
+    cause = (cause as Error & { cause?: unknown }).cause;
+  }
+
+  return false;
 }
 
-/**
- * Checks if an error is an HTTP error with a status code.
- */
 function isHttpError(
   error: unknown,
 ): error is { statusCode: number; statusText: string } {
@@ -136,51 +173,9 @@ function isHttpError(
   );
 }
 
-/**
- * Extracts the status code from an HTTP error.
- */
 function getStatusCode(error: unknown): number {
   if (isHttpError(error)) {
     return error.statusCode;
   }
   return 0;
-}
-
-/**
- * Creates a retryable fetch wrapper with exponential backoff.
- *
- * @param apiKey - API key for authentication
- * @param baseURL - Base URL for the API
- * @param endpoint - API endpoint to call
- * @param options - Retry configuration options
- * @returns Fetch response with retry logic
- */
-export async function retryableFetch(
-  apiKey: string,
-  baseURL: string,
-  endpoint: string,
-  options: RetryOptions = {},
-): Promise<Response> {
-  const opts = { ...DEFAULT_OPTIONS, ...options };
-  return withRetry(async () => {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), opts.timeoutMs);
-    try {
-      const response = await fetch(`${baseURL}${endpoint}`, {
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-        signal: controller.signal,
-      });
-
-      if (!response.ok) {
-        throw new NVIDIAApiError(response.status, response.statusText);
-      }
-
-      return response;
-    } finally {
-      clearTimeout(timeoutId);
-    }
-  }, options);
 }

@@ -130,6 +130,12 @@ export class NVIDIAApiError extends Error {
 /**
  * Platform-specific directory paths for OpenCode.
  */
+export interface NIMSyncToast {
+  title: string;
+  message: string;
+  variant: "info" | "success" | "error";
+}
+
 export interface PlatformPaths {
   config: string;
   data: string;

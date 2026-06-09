@@ -36,18 +36,20 @@ export async function syncNIMModels(api: PluginAPI): Promise<{
   };
 
   const service = createNIMSyncService({
-    getConfigSnapshot: () => api.config.get(),
-    showToast: ({ title, message, variant }) => {
-      safeShowToast({
-        title,
-        description: message,
-        variant:
-          variant === "success"
-            ? "success"
-            : variant === "error"
-              ? "error"
-              : "default",
-      });
+    current: {
+      getConfigSnapshot: () => api.config.get(),
+      showToast: ({ title, message, variant }) => {
+        safeShowToast({
+          title,
+          description: message,
+          variant:
+            variant === "success"
+              ? "success"
+              : variant === "error"
+                ? "error"
+                : "default",
+        });
+      },
     },
   });
 

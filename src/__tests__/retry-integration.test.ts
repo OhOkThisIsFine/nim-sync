@@ -33,6 +33,7 @@ describe("retry integration with fetchModels error patterns", () => {
 
   it("withRetry retries network errors and succeeds on second attempt", async () => {
     const networkError = new TypeError("fetch failed");
+    (networkError as any).code = "ECONNREFUSED";
     const fn = vi
       .fn()
       .mockRejectedValueOnce(networkError)

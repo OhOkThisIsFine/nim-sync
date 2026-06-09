@@ -13,6 +13,7 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    environment: publish
 
     steps:
       - name: Check out repository
@@ -22,6 +23,7 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
 
       - name: Verify release tag matches package version
         if: github.event_name == 'push'
@@ -43,5 +45,18 @@ jobs:
         run: npm run build
 
       - name: Publish to npm
+        id: publish
         if: github.event_name == 'push'
-        run: npm publish
+        continue-on-error: true
+        uses: nick-fields/retry@v3
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        with:
+          max_attempts: 3
+          retry_on: error
+          timeout_minutes: 5
+          command: npm publish --provenance --access public
+
+      - name: Notify publish failure
+        if: steps.publish.outcome == 'failure'
+        run: echo "::warning::npm publish failed after retries"

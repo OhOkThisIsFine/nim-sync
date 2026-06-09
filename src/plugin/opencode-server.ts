@@ -48,6 +48,14 @@ const server: Plugin = async (input) => {
         Math.min(failureCount, BACKGROUND_RETRY_DELAYS_MS.length - 1)
       ];
 
+    console.warn(
+      "[NIM-Sync] Refresh failed (attempt " +
+        (failureCount + 1) +
+        "), retrying in " +
+        retryDelay +
+        "ms",
+    );
+
     failureCount = Math.min(
       failureCount + 1,
       BACKGROUND_RETRY_DELAYS_MS.length - 1,

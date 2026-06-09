@@ -10,6 +10,9 @@ import {
   getCacheDir,
   getDataDir,
   acquireLock,
+  updateJSONCPath,
+  updateJSONCPaths,
+  getConfigFilePath,
 } from "../lib/file-utils.js";
 
 vi.mock("fs/promises");
@@ -51,7 +54,6 @@ describe("File Utils", () => {
       const mockContent = '{ "key": "value" }';
       vi.mocked(fs.readFile).mockResolvedValue(mockContent);
 
-      // Validation function that always fails
       const failingValidator = (
         _data: unknown,
       ): _data is { required: string } => false;
@@ -65,7 +67,6 @@ describe("File Utils", () => {
       const mockContent = '{ "key": "value" }';
       vi.mocked(fs.readFile).mockResolvedValue(mockContent);
 
-      // Validation function that always passes
       const passingValidator = (_data: unknown): _data is { key: string } =>
         true;
 
@@ -76,11 +77,173 @@ describe("File Utils", () => {
 
   describe("writeJSONC", () => {
     it("writes JSON data to file", async () => {
+      const fileNotFound = new Error("File not found") as NodeJS.ErrnoException;
+      fileNotFound.code = "ENOENT";
+      vi.mocked(fs.readFile).mockRejectedValue(fileNotFound);
       vi.mocked(fs.mkdir).mockResolvedValue(undefined);
       vi.mocked(fs.writeFile).mockResolvedValue(undefined);
       vi.mocked(fs.rename).mockResolvedValue(undefined);
 
       await writeJSONC("/test/file.json", { key: "value" });
+
+      expect(fs.writeFile).toHaveBeenCalled();
+    });
+
+    it("preserves JSONC comments when file exists", async () => {
+      const existingContent = `{
+  // This is a comment
+  "key": "old"
+}`;
+      vi.mocked(fs.readFile).mockResolvedValue(existingContent);
+      vi.mocked(fs.mkdir).mockResolvedValue(undefined);
+      vi.mocked(fs.writeFile).mockResolvedValue(undefined);
+      vi.mocked(fs.rename).mockResolvedValue(undefined);
+
+      await writeJSONC("/test/file.json", { key: "new", other: 1 });
+
+      const writtenContent = vi.mocked(fs.writeFile).mock.calls[0]?.[1];
+      expect(writtenContent).toContain("// This is a comment");
+      expect(writtenContent).toContain('"key"');
+      expect(writtenContent).toContain("new");
+      expect(writtenContent).toContain("other");
+    });
+
+    it("creates new file when none exists", async () => {
+      const fileNotFound = new Error("File not found") as NodeJS.ErrnoException;
+      fileNotFound.code = "ENOENT";
+      vi.mocked(fs.readFile).mockRejectedValue(fileNotFound);
+      vi.mocked(fs.mkdir).mockResolvedValue(undefined);
+      vi.mocked(fs.writeFile).mockResolvedValue(undefined);
+      vi.mocked(fs.rename).mockResolvedValue(undefined);
+
+      await writeJSONC("/test/new.json", { data: 42 });
+
+      const writtenContent = vi.mocked(fs.writeFile).mock.calls[0]?.[1];
+      expect(writtenContent).toBe('{\n  "data": 42\n}');
+    });
+  });
+
+  describe("updateJSONCPath", () => {
+    it("updates a single path in existing JSONC while preserving comments", async () => {
+      const existingContent = `{
+  // keep me
+  "a": 1
+}`;
+      vi.mocked(fs.readFile).mockResolvedValue(existingContent);
+      vi.mocked(fs.mkdir).mockResolvedValue(undefined);
+      vi.mocked(fs.writeFile).mockResolvedValue(undefined);
+      vi.mocked(fs.rename).mockResolvedValue(undefined);
+
+      await updateJSONCPath("/test/file.json", ["a"], 2);
+
+      const writtenContent = String(
+        vi.mocked(fs.writeFile).mock.calls[0]?.[1],
+      );
+      expect(writtenContent).toContain("// keep me");
+      expect(writtenContent).toContain('"a": 2');
+    });
+
+    it("creates file content from scratch when file does not exist", async () => {
+      const fileNotFound = new Error("File not found") as NodeJS.ErrnoException;
+      fileNotFound.code = "ENOENT";
+      vi.mocked(fs.readFile).mockRejectedValue(fileNotFound);
+      vi.mocked(fs.mkdir).mockResolvedValue(undefined);
+      vi.mocked(fs.writeFile).mockResolvedValue(undefined);
+      vi.mocked(fs.rename).mockResolvedValue(undefined);
+
+      await updateJSONCPath("/test/new.json", ["key"], "value");
+
+      const writtenContent = String(
+        vi.mocked(fs.writeFile).mock.calls[0]?.[1],
+      );
+      expect(writtenContent).toContain('"key": "value"');
+    });
+
+    it("propagates non-ENOENT read errors", async () => {
+      vi.mocked(fs.readFile).mockRejectedValue(new Error("Permission denied"));
+
+      await expect(
+        updateJSONCPath("/test/file.json", ["key"], "value"),
+      ).rejects.toThrow("Permission denied");
+    });
+
+    it("passes backup options to atomicWrite", async () => {
+      const existingContent = '{ "a": 1 }';
+      vi.mocked(fs.readFile).mockResolvedValue(existingContent);
+      vi.mocked(fs.mkdir).mockResolvedValue(undefined);
+      vi.mocked(fs.writeFile).mockResolvedValue(undefined);
+      vi.mocked(fs.rename).mockResolvedValue(undefined);
+
+      await updateJSONCPath("/test/file.json", ["a"], 2, {
+        backup: true,
+        createBackupDir: true,
+      });
+
+      expect(fs.writeFile).toHaveBeenCalled();
+    });
+  });
+
+  describe("updateJSONCPaths", () => {
+    it("applies all updates before a single atomic write", async () => {
+      const existingContent = `{
+  // comment
+  "a": 1,
+  "b": 2
+}`;
+      vi.mocked(fs.readFile).mockResolvedValue(existingContent);
+      vi.mocked(fs.mkdir).mockResolvedValue(undefined);
+      vi.mocked(fs.writeFile).mockResolvedValue(undefined);
+      vi.mocked(fs.rename).mockResolvedValue(undefined);
+
+      await updateJSONCPaths("/test/file.json", [
+        { jsonPath: ["a"], data: 10 },
+        { jsonPath: ["b"], data: 20 },
+      ]);
+
+      expect(fs.writeFile).toHaveBeenCalledTimes(1);
+      const writtenContent = String(
+        vi.mocked(fs.writeFile).mock.calls[0]?.[1],
+      );
+      expect(writtenContent).toContain("// comment");
+      expect(writtenContent).toContain('"a": 10');
+      expect(writtenContent).toContain('"b": 20');
+    });
+
+    it("handles ENOENT by starting from empty string", async () => {
+      const fileNotFound = new Error("File not found") as NodeJS.ErrnoException;
+      fileNotFound.code = "ENOENT";
+      vi.mocked(fs.readFile).mockRejectedValue(fileNotFound);
+      vi.mocked(fs.mkdir).mockResolvedValue(undefined);
+      vi.mocked(fs.writeFile).mockResolvedValue(undefined);
+      vi.mocked(fs.rename).mockResolvedValue(undefined);
+
+      await updateJSONCPaths("/test/new.json", [
+        { jsonPath: ["a"], data: 1 },
+      ]);
+
+      expect(fs.writeFile).toHaveBeenCalledTimes(1);
+    });
+
+    it("propagates non-ENOENT read errors", async () => {
+      vi.mocked(fs.readFile).mockRejectedValue(new Error("Permission denied"));
+
+      await expect(
+        updateJSONCPaths("/test/file.json", [{ jsonPath: ["a"], data: 1 }]),
+      ).rejects.toThrow("Permission denied");
+    });
+
+    it("passes backup options to atomicWrite", async () => {
+      const existingContent = '{ "a": 1 }';
+      vi.mocked(fs.readFile).mockResolvedValue(existingContent);
+      vi.mocked(fs.mkdir).mockResolvedValue(undefined);
+      vi.mocked(fs.writeFile).mockResolvedValue(undefined);
+      vi.mocked(fs.rename).mockResolvedValue(undefined);
+
+      await updateJSONCPaths(
+        "/test/file.json",
+        [{ jsonPath: ["a"], data: 2 }],
+        { backup: true, createBackupDir: true },
+      );
 
       expect(fs.writeFile).toHaveBeenCalled();
     });
@@ -133,8 +296,6 @@ describe("File Utils", () => {
         createBackupDir: true,
       });
 
-      // Should delete 5 oldest backups (10 total - 5 MAX_BACKUPS)
-      // +1 for the temp file cleanup call = 6 total unlink calls
       const unlinkCalls = vi.mocked(fs.unlink).mock.calls;
       const backupDeletions = unlinkCalls.filter((call) =>
         String(call[0]).includes(".bak"),
@@ -144,7 +305,6 @@ describe("File Utils", () => {
 
     it("does not delete opencode.jsonc backups when cleaning opencode.json backups", async () => {
       const now = Date.now();
-      // 6 opencode.json backups (one beyond MAX_BACKUPS=5) + 2 opencode.jsonc backups
       const jsonBackups = Array.from(
         { length: 6 },
         (_, i) => `opencode.json.${now - i * 1000}.bak`,
@@ -172,9 +332,7 @@ describe("File Utils", () => {
       const backupDeletions = unlinkCalls.filter((call) =>
         String(call[0]).endsWith(".bak"),
       );
-      // Only the 1 excess opencode.json backup should be deleted
       expect(backupDeletions.length).toBe(1);
-      // No opencode.jsonc backup should be touched
       const jsoncDeletions = backupDeletions.filter((call) =>
         String(call[0]).includes("opencode.jsonc"),
       );
@@ -191,7 +349,6 @@ describe("File Utils", () => {
       vi.mocked(fs.access).mockResolvedValue(undefined);
       vi.mocked(fs.copyFile).mockResolvedValue(undefined);
 
-      // Should not throw even if cleanup fails
       await expect(
         atomicWrite("/test/file.txt", "content", {
           backup: true,
@@ -204,7 +361,6 @@ describe("File Utils", () => {
       vi.mocked(fs.mkdir).mockResolvedValue(undefined);
       vi.mocked(fs.access).mockResolvedValue(undefined);
 
-      // copyFile fails with permission error (not ENOENT)
       vi.mocked(fs.copyFile).mockRejectedValue(new Error("Permission denied"));
 
       await expect(
@@ -224,7 +380,6 @@ describe("File Utils", () => {
       vi.mocked(fs.writeFile).mockResolvedValue(undefined);
       vi.mocked(fs.rename).mockResolvedValue(undefined);
 
-      // Should succeed because ENOENT means file doesn't exist yet (no backup needed)
       await expect(
         atomicWrite("/test/file.txt", "content", {
           backup: true,
@@ -238,7 +393,6 @@ describe("File Utils", () => {
       vi.mocked(fs.writeFile).mockRejectedValue(new Error("Disk full"));
       vi.mocked(fs.unlink).mockRejectedValue(new Error("Cannot unlink"));
 
-      // Should still throw the original write error, not the unlink error
       await expect(atomicWrite("/test/file.txt", "content")).rejects.toThrow(
         "Disk full",
       );
@@ -277,6 +431,67 @@ describe("File Utils", () => {
       vi.mocked(fs.mkdir).mockRejectedValue(new Error("Permission denied"));
 
       await expect(ensureDir("/test/dir")).rejects.toThrow("Permission denied");
+    });
+  });
+
+  describe("getConfigFilePath", () => {
+    it("returns opencode.json path when no config file exists", async () => {
+      const fileNotFound = new Error(
+        "File not found",
+      ) as NodeJS.ErrnoException;
+      fileNotFound.code = "ENOENT";
+      vi.mocked(fs.access).mockRejectedValue(fileNotFound);
+
+      const result = await getConfigFilePath();
+      expect(result).toContain("opencode.json");
+      expect(result).not.toContain("opencode.jsonc");
+    });
+
+    it("returns existing opencode.json path", async () => {
+      const fileNotFound = new Error(
+        "File not found",
+      ) as NodeJS.ErrnoException;
+      fileNotFound.code = "ENOENT";
+      vi.mocked(fs.access).mockImplementation(async (filePath: string) => {
+        if (String(filePath).endsWith("opencode.json")) {
+          return undefined;
+        }
+        throw fileNotFound;
+      });
+
+      const result = await getConfigFilePath();
+      expect(result).toContain("opencode.json");
+      expect(result).not.toContain("opencode.jsonc");
+    });
+
+    it("returns existing opencode.jsonc path when opencode.json is missing", async () => {
+      const fileNotFound = new Error(
+        "File not found",
+      ) as NodeJS.ErrnoException;
+      fileNotFound.code = "ENOENT";
+      vi.mocked(fs.access).mockImplementation(async (filePath: string) => {
+        if (String(filePath).endsWith("opencode.jsonc")) {
+          return undefined;
+        }
+        throw fileNotFound;
+      });
+
+      const result = await getConfigFilePath();
+      expect(result).toContain("opencode.jsonc");
+    });
+
+    it("prefers opencode.json over opencode.jsonc when both exist", async () => {
+      vi.mocked(fs.access).mockResolvedValue(undefined);
+
+      const result = await getConfigFilePath();
+      expect(result).toContain("opencode.json");
+      expect(result).not.toContain("opencode.jsonc");
+    });
+
+    it("throws non-ENOENT error from fs.access", async () => {
+      vi.mocked(fs.access).mockRejectedValue(new Error("Permission denied"));
+
+      await expect(getConfigFilePath()).rejects.toThrow("Permission denied");
     });
   });
 
@@ -392,7 +607,6 @@ describe("File Utils", () => {
 
   describe("acquireLock", () => {
     beforeEach(() => {
-      // Suppress expected console.error output in lock tests
       vi.spyOn(console, "error").mockImplementation(() => {});
     });
 
@@ -408,7 +622,6 @@ describe("File Utils", () => {
       const release = await acquireLock("test-lock");
       expect(typeof release).toBe("function");
 
-      // Release the lock
       await release();
       expect(fs.unlink).toHaveBeenCalled();
     });
@@ -452,34 +665,32 @@ describe("File Utils", () => {
       );
     });
 
-  it("cleans up stale lock from crashed process", async () => {
-    const mockFd: MockFileHandle = {
-      close: vi.fn().mockResolvedValue(undefined),
-      writeFile: vi.fn().mockResolvedValue(undefined),
-    };
+    it("cleans up stale lock from crashed process", async () => {
+      const mockFd: MockFileHandle = {
+        close: vi.fn().mockResolvedValue(undefined),
+        writeFile: vi.fn().mockResolvedValue(undefined),
+      };
 
-    const eexistError = new Error("Lock exists") as NodeJS.ErrnoException;
-    eexistError.code = "EEXIST";
+      const eexistError = new Error("Lock exists") as NodeJS.ErrnoException;
+      eexistError.code = "EEXIST";
 
-    // Simulate a stale lock file with old timestamp
-    const staleLockMetadata = JSON.stringify({
-      pid: 99999, // Non-existent process
-      timestamp: Date.now() - 10 * 60 * 1000, // 10 minutes ago (stale)
+      const staleLockMetadata = JSON.stringify({
+        pid: 99999,
+        timestamp: Date.now() - 10 * 60 * 1000,
+      });
+
+      vi.mocked(fs.open)
+        .mockRejectedValueOnce(eexistError)
+        .mockResolvedValueOnce(mockFd as never);
+      vi.mocked(fs.readFile).mockResolvedValueOnce(staleLockMetadata);
+      vi.mocked(fs.unlink).mockResolvedValue(undefined);
+      vi.mocked(fs.mkdir).mockResolvedValue(undefined);
+
+      const release = await acquireLock("test-lock");
+      expect(typeof release).toBe("function");
+
+      expect(fs.unlink).toHaveBeenCalled();
     });
-
-    vi.mocked(fs.open)
-      .mockRejectedValueOnce(eexistError)
-      .mockResolvedValueOnce(mockFd as never);
-    vi.mocked(fs.readFile).mockResolvedValueOnce(staleLockMetadata);
-    vi.mocked(fs.unlink).mockResolvedValue(undefined);
-    vi.mocked(fs.mkdir).mockResolvedValue(undefined);
-
-    const release = await acquireLock("test-lock");
-    expect(typeof release).toBe("function");
-
-    // Should have called unlink to remove the stale lock
-    expect(fs.unlink).toHaveBeenCalled();
-  });
 
     it("handles release lock failure gracefully", async () => {
       const mockFd: MockFileHandle = {
@@ -489,14 +700,12 @@ describe("File Utils", () => {
       vi.mocked(fs.open).mockResolvedValue(mockFd as never);
       vi.mocked(fs.mkdir).mockResolvedValue(undefined);
 
-      // First call for stale cleanup (if any), second for release
       vi.mocked(fs.unlink).mockRejectedValue(
         new Error("Failed to release lock"),
       );
 
       const release = await acquireLock("test-lock");
 
-      // Release should not throw even if unlink fails
       await expect(release()).resolves.toBeUndefined();
     });
   });

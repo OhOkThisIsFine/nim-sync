@@ -40,10 +40,13 @@ type ProbeMeta = {
 
 const getProbeMeta = (model: Model): ProbeMeta => {
   const opts = model.options as Record<string, unknown> | undefined;
+  const rawLatency = opts?.nimProbeLatencyMs;
+  const rawChatCapable = opts?.nimProbeChatCapable;
+  const rawReasoning = opts?.nimProbeReasoning;
   return {
-    latencyMs: opts?.nimProbeLatencyMs as number | undefined,
-    chatCapable: opts?.nimProbeChatCapable as boolean | undefined,
-    reasoning: opts?.nimProbeReasoning as boolean | undefined,
+    latencyMs: typeof rawLatency === "number" ? rawLatency : undefined,
+    chatCapable: typeof rawChatCapable === "boolean" ? rawChatCapable : undefined,
+    reasoning: typeof rawReasoning === "boolean" ? rawReasoning : undefined,
   };
 };
 

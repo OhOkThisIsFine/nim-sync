@@ -141,6 +141,8 @@ describe("User Journey: NVIDIA NIM Model Synchronization", () => {
         small_model: "nim/mistralai/mistral-7b-instruct",
         provider: {
           nim: {
+            npm: "@ai-sdk/openai-compatible",
+            name: "NVIDIA NIM",
             models: {
               "meta/llama-3.1-70b-instruct": {
                 name: "Meta Llama 3.1 70B Instruct",
@@ -359,6 +361,8 @@ describe("User Journey: NVIDIA NIM Model Synchronization", () => {
       const currentConfig = JSON.stringify({
         provider: {
           nim: {
+            npm: "@ai-sdk/openai-compatible",
+            name: "NVIDIA NIM",
             models: {
               [modelId]: { name: modelName, options: {} },
             },
@@ -458,7 +462,11 @@ describe("User Journey: NVIDIA NIM Model Synchronization", () => {
 
       const configWithNIM = JSON.stringify({
         provider: {
-          nim: { models: { "existing-model": { name: "Existing Model" } } },
+          nim: {
+            npm: "@ai-sdk/openai-compatible",
+            name: "NVIDIA NIM",
+            models: { "existing-model": { name: "Existing Model" } },
+          },
         },
       });
 
@@ -503,7 +511,13 @@ describe("User Journey: NVIDIA NIM Model Synchronization", () => {
       global.fetch = mockFetch;
 
       const configWithNIM = JSON.stringify({
-        provider: { nim: { models: {} } },
+        provider: {
+          nim: {
+            npm: "@ai-sdk/openai-compatible",
+            name: "NVIDIA NIM",
+            models: {},
+          },
+        },
       });
 
       mockPluginAPI.config.get = vi.fn(() => ({
@@ -547,7 +561,13 @@ describe("User Journey: NVIDIA NIM Model Synchronization", () => {
       });
 
       const configWithNIM = JSON.stringify({
-        provider: { nim: { models: {} } },
+        provider: {
+          nim: {
+            npm: "@ai-sdk/openai-compatible",
+            name: "NVIDIA NIM",
+            models: {},
+          },
+        },
       });
 
       mockPluginAPI.config.get = vi.fn(() => ({

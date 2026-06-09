@@ -116,6 +116,7 @@ describe("official server plugin", () => {
 
   it("uses a shorter retry delay after failed background refreshes", async () => {
     vi.useFakeTimers();
+    const consoleWarnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     refreshModels
       .mockResolvedValueOnce("failed")
       .mockResolvedValueOnce("unchanged");
@@ -140,8 +141,15 @@ describe("official server plugin", () => {
     await vi.advanceTimersByTimeAsync(60_000);
     expect(refreshModels).toHaveBeenCalledTimes(2);
 
+    expect(consoleWarnSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/\[NIM-Sync\].*retrying in/),
+    );
+    expect(consoleWarnSpy).toHaveBeenCalledTimes(1);
+
     await vi.advanceTimersByTimeAsync(60_000);
     expect(refreshModels).toHaveBeenCalledTimes(3);
+
+    consoleWarnSpy.mockRestore();
   });
 
   it("does not expose a server-side /nim-refresh prompt hook", async () => {

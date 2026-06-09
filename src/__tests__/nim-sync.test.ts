@@ -3,23 +3,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import fs from "fs/promises";
 import type { PluginAPI } from "../types/index.js";
 import { syncNIMModels } from "../plugin/nim-sync.js";
-import { getCacheDir, getConfigDir } from "../lib/file-utils.js";
+import { getCacheDir, getConfigDir } from "../lib/config-path.js";
 import { createMockPluginAPI } from "./mocks.js";
+import { hashModels } from "../lib/crypto-utils.js";
 
 vi.mock("fs/promises");
-vi.mock("../lib/retry.js", () => ({
-  withRetry: vi.fn().mockImplementation(async (fn) => fn()),
-}));
-vi.mock("crypto", () => {
-  const createHash = () => ({
-    update: vi.fn().mockReturnThis(),
-    digest: vi.fn((_encoding: string) => "test-hash-value"),
-  });
-  return {
-    default: { createHash },
-    createHash,
-  };
-});
 
 const flushAsyncWork = async (cycles = 20): Promise<void> => {
   for (let i = 0; i < cycles; i++) {
@@ -460,6 +448,8 @@ describe("NIM Sync Unit Tests", () => {
       const existingConfig = JSON.stringify({
         provider: {
           nim: {
+            npm: "@ai-sdk/openai-compatible",
+            name: "NVIDIA NIM",
             models: {
               "existing-model": {
                 name: "Existing Model",
@@ -490,6 +480,8 @@ describe("NIM Sync Unit Tests", () => {
       const existingConfig = JSON.stringify({
         provider: {
           nim: {
+            npm: "@ai-sdk/openai-compatible",
+            name: "NVIDIA NIM",
             options: {
               region: "us-west-2",
               timeout: 45_000,
@@ -592,9 +584,12 @@ describe("NIM Sync Unit Tests", () => {
         },
       });
 
+      const modelsHash = hashModels([
+        { id: "existing-model", name: "Existing Model" },
+      ]);
       const existingCache = JSON.stringify({
         lastRefresh: Date.now() - 25 * 60 * 60 * 1000,
-        modelsHash: "test-hash-value",
+        modelsHash,
       });
 
       vi.mocked(fs.readFile).mockImplementation(async (filePath: string) => {
@@ -894,8 +889,8 @@ describe("NIM Sync Unit Tests", () => {
     it("handles API errors with status code", async () => {
       const mockFetch = vi.fn().mockResolvedValue({
         ok: false,
-        status: 500,
-        statusText: "Internal Server Error",
+        status: 400,
+        statusText: "Bad Request",
       });
       global.fetch = mockFetch;
 
@@ -931,6 +926,8 @@ describe("NIM Sync Unit Tests", () => {
       const existingConfig = JSON.stringify({
         provider: {
           nim: {
+            npm: "@ai-sdk/openai-compatible",
+            name: "NVIDIA NIM",
             models: {
               "existing-model": {
                 name: "Existing Model",
@@ -1175,7 +1172,13 @@ describe("NIM Sync Unit Tests", () => {
       }) as any;
 
       const existingConfig = JSON.stringify({
-        provider: { nim: { models: {} } },
+        provider: {
+          nim: {
+            npm: "@ai-sdk/openai-compatible",
+            name: "NVIDIA NIM",
+            models: {},
+          },
+        },
       });
       vi.mocked(fs.readFile).mockImplementation(async (filePath: string) => {
         if (filePath.includes("auth.json")) {
@@ -1245,7 +1248,13 @@ describe("NIM Sync Unit Tests", () => {
       }) as any;
 
       const existingConfig = JSON.stringify({
-        provider: { nim: { models: {} } },
+        provider: {
+          nim: {
+            npm: "@ai-sdk/openai-compatible",
+            name: "NVIDIA NIM",
+            models: {},
+          },
+        },
       });
       vi.mocked(fs.readFile).mockImplementation(async (filePath: string) => {
         if (filePath.includes("auth.json")) {
@@ -1318,7 +1327,13 @@ describe("NIM Sync Unit Tests", () => {
       }) as any;
 
       const existingConfig = JSON.stringify({
-        provider: { nim: { models: {} } },
+        provider: {
+          nim: {
+            npm: "@ai-sdk/openai-compatible",
+            name: "NVIDIA NIM",
+            models: {},
+          },
+        },
       });
       vi.mocked(fs.readFile).mockImplementation(async (filePath: string) => {
         if (filePath.includes("auth.json")) {
@@ -1384,7 +1399,13 @@ describe("NIM Sync Unit Tests", () => {
       }) as any;
 
       const existingConfig = JSON.stringify({
-        provider: { nim: { models: {} } },
+        provider: {
+          nim: {
+            npm: "@ai-sdk/openai-compatible",
+            name: "NVIDIA NIM",
+            models: {},
+          },
+        },
       });
       vi.mocked(fs.readFile).mockImplementation(async (filePath: string) => {
         if (filePath.includes("auth.json")) {

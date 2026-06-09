@@ -10,6 +10,7 @@ export const PROMPT_SUBMIT_COMMAND_VALUE = "prompt.submit";
 type PromptSubmitRef = Pick<TuiPromptRef, "current" | "reset" | "submit">;
 
 export const isNIMRefreshSlashCommand = (input: string): boolean => {
+  if (typeof input !== "string") return false;
   const trimmed = input.trimStart();
   if (!trimmed.startsWith("/")) {
     return false;

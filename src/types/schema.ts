@@ -1,3 +1,5 @@
+import type { OpenCodeConfig } from "./index.js";
+
 /**
  * Validates OpenCode configuration against schema.
  *
@@ -87,8 +89,43 @@ export function validateOpenCodeConfig(config: unknown): {
     errors.push("small_model must be a string if provided");
   }
 
+  // Validate command section structure
+  if (typedConfig.command !== undefined) {
+    if (typeof typedConfig.command !== "object" || typedConfig.command === null) {
+      errors.push("command must be an object if provided");
+    } else {
+      const command = typedConfig.command as Record<string, unknown>;
+      for (const [cmdName, cmdValue] of Object.entries(command)) {
+        if (typeof cmdValue !== "object" || cmdValue === null) {
+          errors.push(`command.${cmdName} must be an object`);
+        } else {
+          const cmdObj = cmdValue as Record<string, unknown>;
+          if (typeof cmdObj.template !== "string") {
+            errors.push(`command.${cmdName}.template must be a string`);
+          }
+          if (cmdObj.description !== undefined && typeof cmdObj.description !== "string") {
+            errors.push(`command.${cmdName}.description must be a string if provided`);
+          }
+          if (cmdObj.agent !== undefined && typeof cmdObj.agent !== "string") {
+            errors.push(`command.${cmdName}.agent must be a string if provided`);
+          }
+          if (cmdObj.model !== undefined && typeof cmdObj.model !== "string") {
+            errors.push(`command.${cmdName}.model must be a string if provided`);
+          }
+          if (cmdObj.subtask !== undefined && typeof cmdObj.subtask !== "boolean") {
+            errors.push(`command.${cmdName}.subtask must be a boolean if provided`);
+          }
+        }
+      }
+    }
+  }
+
   return {
     valid: errors.length === 0,
     errors: errors.length > 0 ? errors : undefined,
   };
+}
+
+export function isValidOpenCodeConfig(data: unknown): data is OpenCodeConfig {
+  return validateOpenCodeConfig(data).valid;
 }
