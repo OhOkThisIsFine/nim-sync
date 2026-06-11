@@ -14,7 +14,7 @@ describe("release automation", () => {
     expect(workflow).toContain("tags:\n      - 'v*'");
     expect(workflow).toContain("workflow_dispatch:");
     expect(workflow).toContain("id-token: write");
-    expect(workflow).toContain("node-version: '24.0.0'");
+    expect(workflow).toContain("node-version: '24'");
     expect(workflow).toContain("npm ci");
     expect(workflow).toContain("npm publish");
     expect(workflow).toContain("verify-release-tag.mjs");
