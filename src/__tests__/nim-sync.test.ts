@@ -4,17 +4,10 @@ import fs from "fs/promises";
 import type { PluginAPI } from "../types/index.js";
 import { syncNIMModels } from "../plugin/nim-sync.js";
 import { getCacheDir, getConfigDir } from "../lib/config-path.js";
-import { createMockPluginAPI } from "./mocks.js";
+import { createMockPluginAPI, setupDefaultFsMocks, flushAsyncWork } from "./mocks.js";
 import { hashModels } from "../lib/crypto-utils.js";
 
 vi.mock("fs/promises");
-
-const flushAsyncWork = async (cycles = 20): Promise<void> => {
-  for (let i = 0; i < cycles; i++) {
-    await Promise.resolve();
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
-};
 
 describe("NIM Sync Unit Tests", () => {
   let mockPluginAPI: PluginAPI;
@@ -25,23 +18,7 @@ describe("NIM Sync Unit Tests", () => {
     process.env.USERPROFILE = "/test/user";
     process.env.NVIDIA_API_KEY = "test-api-key";
 
-    vi.mocked(fs.readFile).mockImplementation(async (filePath: string) => {
-      if (filePath.includes("auth.json")) {
-        return Promise.reject(
-          Object.assign(new Error("File not found"), { code: "ENOENT" }),
-        );
-      }
-      return Promise.resolve("{}");
-    });
-    vi.mocked(fs.writeFile).mockResolvedValue(undefined);
-    vi.mocked(fs.mkdir).mockResolvedValue(undefined);
-    vi.mocked(fs.open).mockResolvedValue({
-      close: vi.fn(),
-      writeFile: vi.fn().mockResolvedValue(undefined),
-    } as any);
-    vi.mocked(fs.unlink).mockResolvedValue(undefined);
-    vi.mocked(fs.access).mockResolvedValue(undefined);
-    vi.mocked(fs.stat).mockResolvedValue({ mtimeMs: Date.now() } as any);
+    setupDefaultFsMocks();
   });
 
   describe("getAuthPath", () => {
@@ -748,13 +725,6 @@ describe("NIM Sync Unit Tests", () => {
       await Promise.resolve();
 
       expect(initResolved).toBe(true);
-      expect(mockPluginAPI.command.register).toHaveBeenCalledWith(
-        "nim-refresh",
-        expect.any(Function),
-        expect.objectContaining({
-          description: expect.stringContaining("NVIDIA"),
-        }),
-      );
 
       resolveFetch?.({
         ok: true,
@@ -1497,31 +1467,18 @@ describe("NIM Sync Unit Tests", () => {
       });
       global.fetch = mockFetch;
 
-      // Capture the nim-refresh command handler
-      let nimRefreshHandler: (() => Promise<void>) | null = null;
-      mockPluginAPI.command.register = vi.fn((name, handler) => {
-        if (name === "nim-refresh") {
-          nimRefreshHandler = handler as () => Promise<void>;
-        }
-      }) as any;
-
       const plugin = await syncNIMModels(mockPluginAPI);
       await plugin.init?.();
       await flushAsyncWork();
 
       // First manual refresh should work
-      expect(nimRefreshHandler).not.toBeNull();
-      if (nimRefreshHandler) {
-        await nimRefreshHandler();
-      }
+      await plugin.manualRefresh?.();
 
       expect(mockFetch).toHaveBeenCalledTimes(4); // init (models+probe) + manual (models+probe)
 
       // Second immediate refresh (without waiting 60 seconds) should be rate limited
       vi.clearAllMocks();
-      if (nimRefreshHandler) {
-        await nimRefreshHandler();
-      }
+      await plugin.manualRefresh?.();
 
       expect(mockPluginAPI.tui.toast.show).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -1552,13 +1509,6 @@ describe("NIM Sync Unit Tests", () => {
     });
     global.fetch = mockFetch;
 
-    let nimRefreshHandler: (() => Promise<void>) | null = null;
-    mockPluginAPI.command.register = vi.fn((name, handler) => {
-      if (name === "nim-refresh") {
-        nimRefreshHandler = handler as () => Promise<void>;
-      }
-    }) as any;
-
     const plugin = await syncNIMModels(mockPluginAPI);
     await plugin.init?.();
     await flushAsyncWork();
@@ -1566,10 +1516,7 @@ describe("NIM Sync Unit Tests", () => {
     const inFlightRefresh = plugin.refreshModels?.(true);
     await flushAsyncWork();
 
-    expect(nimRefreshHandler).not.toBeNull();
-    if (nimRefreshHandler) {
-      await nimRefreshHandler();
-    }
+    await plugin.manualRefresh?.();
 
     expect(mockPluginAPI.tui.toast.show).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1580,9 +1527,7 @@ describe("NIM Sync Unit Tests", () => {
     );
 
     vi.clearAllMocks();
-    if (nimRefreshHandler) {
-      await nimRefreshHandler();
-    }
+    await plugin.manualRefresh?.();
 
     expect(mockPluginAPI.tui.toast.show).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1614,24 +1559,13 @@ describe("NIM Sync Unit Tests", () => {
         return Promise.resolve("{}");
       });
 
-      let nimRefreshHandler: (() => Promise<void>) | null = null;
-      mockPluginAPI.command.register = vi.fn((name, handler) => {
-        if (name === "nim-refresh") {
-          nimRefreshHandler = handler as () => Promise<void>;
-        }
-      }) as any;
-
       const plugin = await syncNIMModels(mockPluginAPI);
       await plugin.init?.();
       await flushAsyncWork();
 
       vi.clearAllMocks();
-      expect(nimRefreshHandler).not.toBeNull();
-
-      if (nimRefreshHandler) {
-        await nimRefreshHandler();
-        await nimRefreshHandler();
-      }
+      await plugin.manualRefresh?.();
+      await plugin.manualRefresh?.();
 
       expect(mockPluginAPI.tui.toast.show).toHaveBeenCalledTimes(2);
       expect(mockPluginAPI.tui.toast.show).toHaveBeenNthCalledWith(

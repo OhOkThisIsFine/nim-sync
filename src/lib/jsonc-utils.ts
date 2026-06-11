@@ -6,34 +6,36 @@ import {
 } from "jsonc-parser/lib/esm/main.js";
 import type { AtomicWriteOptions } from "./atomic-io.js";
 import { atomicWrite } from "./atomic-io.js";
+import { ParseError, ValidationError } from "./errors.js";
+
+function stripBOM(content: string): string {
+  if (content.startsWith("\uFEFF")) {
+    return content.slice(1);
+  }
+  return content;
+}
 
 export async function readJSONC<T = unknown>(
   filePath: string,
   validate?: (data: unknown) => data is T,
 ): Promise<T> {
-  try {
-    const content = await fs.readFile(filePath, "utf-8");
-    const errors: { error: number; offset: number; length: number }[] = [];
-    const result = parseJSONC(content, errors);
+  let content = await fs.readFile(filePath, "utf-8");
+  content = stripBOM(content);
+  const errors: { error: number; offset: number; length: number }[] = [];
+  const result = parseJSONC(content, errors);
 
-    if (errors.length > 0) {
-      const errorDetails = errors
-        .map((e) => `Parse error code ${e.error} at offset ${e.offset}`)
-        .join("; ");
-      throw new Error(`JSONC parse errors in ${filePath}: ${errorDetails}`);
-    }
-
-    if (validate && !validate(result)) {
-      throw new Error(`Invalid data structure in ${filePath}`);
-    }
-
-    return result as T;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return {} as T;
-    }
-    throw error;
+  if (errors.length > 0) {
+    const errorDetails = errors
+      .map((e) => `Parse error code ${e.error} at offset ${e.offset}`)
+      .join("; ");
+    throw new ParseError(`JSONC parse errors in ${filePath}: ${errorDetails}`);
   }
+
+  if (validate && !validate(result)) {
+    throw new ValidationError(`Invalid data structure in ${filePath}`);
+  }
+
+  return result as T;
 }
 
 export async function writeJSONC<T = unknown>(
@@ -43,7 +45,8 @@ export async function writeJSONC<T = unknown>(
 ): Promise<void> {
   let content: string;
   try {
-    const existingContent = await fs.readFile(filePath, "utf-8");
+    let existingContent = await fs.readFile(filePath, "utf-8");
+    existingContent = stripBOM(existingContent);
     const eol = existingContent.includes("\r\n") ? "\r\n" : "\n";
     const formattingOptions = {
       insertSpaces: true,
@@ -82,6 +85,7 @@ export async function updateJSONCPath<T = unknown>(
 
   try {
     existingContent = await fs.readFile(filePath, "utf-8");
+    existingContent = stripBOM(existingContent);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
       throw error;
@@ -113,6 +117,7 @@ export async function updateJSONCPaths(
 
   try {
     existingContent = await fs.readFile(filePath, "utf-8");
+    existingContent = stripBOM(existingContent);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
       throw error;

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import fs from "fs/promises";
 import type { PluginAPI } from "../types/index.js";
 import { syncNIMModels } from "../plugin/nim-sync.js";
-import { createMockPluginAPI } from "./mocks.js";
+import { createMockPluginAPI, setupDefaultFsMocks, flushAsyncWork } from "./mocks.js";
 
 vi.mock("fs/promises");
 vi.mock("../lib/retry.js", () => ({
@@ -19,13 +19,6 @@ vi.mock("crypto", () => {
   };
 });
 
-const flushAsyncWork = async (cycles = 5): Promise<void> => {
-  for (let i = 0; i < cycles; i++) {
-    await Promise.resolve();
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
-};
-
 describe("User Journey: NVIDIA NIM Model Synchronization", () => {
   let mockPluginAPI: PluginAPI;
 
@@ -36,23 +29,7 @@ describe("User Journey: NVIDIA NIM Model Synchronization", () => {
     process.env.USERPROFILE = "/test/user";
     process.env.NVIDIA_API_KEY = "test-api-key";
 
-    vi.mocked(fs.readFile).mockImplementation(async (filePath: string) => {
-      if (filePath.includes("auth.json")) {
-        return Promise.reject(
-          Object.assign(new Error("File not found"), { code: "ENOENT" }),
-        );
-      }
-      return Promise.resolve("{}");
-    });
-    vi.mocked(fs.writeFile).mockResolvedValue(undefined);
-    vi.mocked(fs.mkdir).mockResolvedValue(undefined);
-    vi.mocked(fs.open).mockResolvedValue({
-      close: vi.fn(),
-      writeFile: vi.fn().mockResolvedValue(undefined),
-    } as any);
-    vi.mocked(fs.unlink).mockResolvedValue(undefined);
-    vi.mocked(fs.access).mockResolvedValue(undefined);
-    vi.mocked(fs.stat).mockResolvedValue({ mtimeMs: Date.now() } as any);
+    setupDefaultFsMocks();
   });
 
   describe("As a user, I want NVIDIA NIM models to sync automatically on OpenCode startup", () => {
@@ -224,18 +201,7 @@ describe("User Journey: NVIDIA NIM Model Synchronization", () => {
   });
 
   describe("As a user, I want manual refresh capability", () => {
-    it("exposes /nim-refresh command for manual refresh", async () => {
-      const plugin = await syncNIMModels(mockPluginAPI);
-      await plugin.init?.();
 
-      expect(mockPluginAPI.command.register).toHaveBeenCalledWith(
-        "nim-refresh",
-        expect.any(Function),
-        expect.objectContaining({
-          description: expect.stringContaining("NVIDIA"),
-        }),
-      );
-    });
 
     it("manual refresh command triggers model fetch", async () => {
       const mockFetch = vi.fn((url: string) => {
@@ -256,12 +222,6 @@ describe("User Journey: NVIDIA NIM Model Synchronization", () => {
       });
       global.fetch = mockFetch;
 
-      let refreshHandler: () => Promise<void> = async () => {};
-      mockPluginAPI.command.register = vi.fn((name, handler) => {
-        if (name === "nim-refresh")
-          refreshHandler = handler as () => Promise<void>;
-      }) as any;
-
       const plugin = await syncNIMModels(mockPluginAPI);
       await plugin.init?.();
       await vi.waitFor(() =>
@@ -270,7 +230,7 @@ describe("User Journey: NVIDIA NIM Model Synchronization", () => {
       await flushAsyncWork();
 
       vi.clearAllMocks();
-      await refreshHandler();
+      await plugin.manualRefresh?.();
 
       await vi.waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2));
     }, 10000);
@@ -331,19 +291,13 @@ describe("User Journey: NVIDIA NIM Model Synchronization", () => {
       });
       global.fetch = mockFetch;
 
-      let refreshHandler: () => Promise<void> = async () => {};
-      mockPluginAPI.command.register = vi.fn((name, handler) => {
-        if (name === "nim-refresh")
-          refreshHandler = handler as () => Promise<void>;
-      }) as any;
-
       const plugin = await syncNIMModels(mockPluginAPI);
       await plugin.init?.();
       await flushAsyncWork();
 
       expect(mockFetch).not.toHaveBeenCalled();
 
-      await refreshHandler();
+      await plugin.manualRefresh?.();
 
       expect(mockFetch).toHaveBeenCalledTimes(2);
       expect(mockPluginAPI.tui.toast.show).toHaveBeenCalledWith(
@@ -417,12 +371,6 @@ describe("User Journey: NVIDIA NIM Model Synchronization", () => {
       });
       global.fetch = mockFetch;
 
-      let refreshHandler: () => Promise<void> = async () => {};
-      mockPluginAPI.command.register = vi.fn((name, handler) => {
-        if (name === "nim-refresh")
-          refreshHandler = handler as () => Promise<void>;
-      }) as any;
-
       const plugin = await syncNIMModels(mockPluginAPI);
       await plugin.init?.();
       await flushAsyncWork();
@@ -431,7 +379,7 @@ describe("User Journey: NVIDIA NIM Model Synchronization", () => {
       await flushAsyncWork();
 
       // refreshModels is waiting on models fetch, so manual should show "in progress"
-      await refreshHandler();
+      await plugin.manualRefresh?.();
 
       expect(mockPluginAPI.tui.toast.show).toHaveBeenCalledWith(
         expect.objectContaining({

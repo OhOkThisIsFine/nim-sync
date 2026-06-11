@@ -1,15 +1,12 @@
-import path from "path";
 import { readJSONC, writeJSONC } from "./jsonc-utils.js";
 import { acquireLock } from "./file-lock.js";
-import { getCacheDir } from "./config-path.js";
+import { getCacheFilePath } from "./config-path.js";
 import type { CacheData } from "../types/index.js";
 import type { NIMSyncToast } from "../types/index.js";
 
 type ToastFn = (toast: NIMSyncToast) => void;
 
-const CACHE_FILE_NAME = "nim-sync-cache.json";
-
-const getCachePath = (): string => path.join(getCacheDir(), CACHE_FILE_NAME);
+const getCachePath = (): string => getCacheFilePath();
 
 const readCache = async (): Promise<CacheData | null> => {
   try {

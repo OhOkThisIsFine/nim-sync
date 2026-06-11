@@ -6,14 +6,17 @@ import {
   writeJSONC,
   atomicWrite,
   ensureDir,
-  getConfigDir,
-  getCacheDir,
-  getDataDir,
   acquireLock,
   updateJSONCPath,
   updateJSONCPaths,
-  getConfigFilePath,
 } from "../lib/file-utils.js";
+import {
+  getConfigDir,
+  getCacheDir,
+  getDataDir,
+  getConfigFilePath,
+} from "../lib/config-path.js";
+import { LockError, BackupError, ParseError, ValidationError } from "../lib/errors.js";
 
 vi.mock("fs/promises");
 
@@ -33,13 +36,27 @@ describe("File Utils", () => {
       expect(result).toEqual({ key: "value" });
     });
 
-    it("returns empty object for ENOENT error", async () => {
+    it("should propagate ENOENT error when file does not exist", async () => {
       const error = new Error("File not found") as NodeJS.ErrnoException;
       error.code = "ENOENT";
       vi.mocked(fs.readFile).mockRejectedValue(error);
 
-      const result = await readJSONC("/test/missing.json");
-      expect(result).toEqual({});
+      await expect(readJSONC("/test/missing.json")).rejects.toThrow();
+    });
+
+    it("handles UTF-8 BOM", async () => {
+      const mockContent = '\uFEFF{ "key": "value" }';
+      vi.mocked(fs.readFile).mockResolvedValue(mockContent);
+
+      const result = await readJSONC("/test/file.json");
+      expect(result).toEqual({ key: "value" });
+    });
+
+    it("throws ParseError on jsonc parse failure", async () => {
+      const mockContent = "{ invalid json }";
+      vi.mocked(fs.readFile).mockResolvedValue(mockContent);
+
+      await expect(readJSONC("/test/file.json")).rejects.toThrow(ParseError);
     });
 
     it("throws error for other read failures", async () => {
@@ -60,7 +77,7 @@ describe("File Utils", () => {
 
       await expect(
         readJSONC("/test/file.json", failingValidator),
-      ).rejects.toThrow("Invalid data structure in /test/file.json");
+      ).rejects.toThrow(ValidationError);
     });
 
     it("passes when validation callback returns true", async () => {
@@ -368,7 +385,7 @@ describe("File Utils", () => {
           backup: true,
           createBackupDir: true,
         }),
-      ).rejects.toThrow("Failed to create backup: Permission denied");
+      ).rejects.toThrow(BackupError);
     });
 
     it("ignores ENOENT when original file does not exist for backup", async () => {
@@ -652,7 +669,7 @@ describe("File Utils", () => {
       vi.mocked(fs.mkdir).mockResolvedValue(undefined);
 
       await expect(acquireLock("test-lock", 100)).rejects.toThrow(
-        "Failed to acquire lock",
+        LockError,
       );
     });
 
@@ -707,6 +724,16 @@ describe("File Utils", () => {
       const release = await acquireLock("test-lock");
 
       await expect(release()).resolves.toBeUndefined();
+    });
+  });
+
+  describe("Module Structure and Cycle Prevention", () => {
+    it("ensures file-utils does not export config paths", async () => {
+      const fileUtils = await import("../lib/file-utils.js");
+      expect(fileUtils).not.toHaveProperty("getConfigFilePath");
+      expect(fileUtils).not.toHaveProperty("getConfigDir");
+      expect(fileUtils).not.toHaveProperty("getCacheDir");
+      expect(fileUtils).not.toHaveProperty("getDataDir");
     });
   });
 });

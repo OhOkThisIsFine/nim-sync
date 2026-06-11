@@ -2,13 +2,23 @@ import fs from "fs/promises";
 import path from "path";
 import type { LockMetadata } from "../types/index.js";
 import { getCacheDir } from "./config-path.js";
-import { ensureDir } from "./file-utils.js";
+import { LockError } from "./errors.js";
 
 export const LOCK_STALE_THRESHOLD_MS = 5 * 60 * 1000;
 
 export const LOCK_RETRY_INTERVAL_MS = 100;
 
 export const MAX_BACKUPS = 5;
+
+export async function ensureDir(dirPath: string): Promise<void> {
+  try {
+    await fs.mkdir(dirPath, { recursive: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+      throw error;
+    }
+  }
+}
 
 function isProcessRunning(pid: number): boolean {
   try {
@@ -110,5 +120,5 @@ export async function acquireLock(
     }
   }
 
-  throw new Error(`Failed to acquire lock "${lockName}" after ${timeoutMs}ms`);
+  throw new LockError(`Failed to acquire lock "${lockName}" after ${timeoutMs}ms`);
 }

@@ -44,8 +44,8 @@ export interface OpenCodeConfig {
   >;
   provider?: {
     nim?: {
-      npm?: string;
-      name?: string;
+      npm: string;
+      name: string;
       options?: {
         baseURL?: string;
       };

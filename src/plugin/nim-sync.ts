@@ -54,13 +54,6 @@ export async function syncNIMModels(api: PluginAPI): Promise<{
   });
 
   const init = async (): Promise<void> => {
-    try {
-      api.command.register("nim-refresh", service.manualRefresh, {
-        description: "Force refresh NVIDIA NIM models",
-      });
-    } catch (e) {
-      console.error("[NIM-Sync] Failed to register command:", e);
-    }
     void service.refreshModels().catch((e) => {
       console.error("[NIM-Sync] Init failed:", e);
     });

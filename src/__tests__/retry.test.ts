@@ -108,6 +108,52 @@ describe("withRetry", () => {
 
     expect(fn).toHaveBeenCalledTimes(1);
   });
+
+  it("rejects with TimeoutError when operation exceeds timeoutMs limit", async () => {
+    vi.useFakeTimers();
+    const fn = () => new Promise((resolve) => setTimeout(() => resolve("success"), 500));
+    
+    const promise = withRetry(fn, { timeoutMs: 100, maxRetries: 0 });
+    const assertionPromise = expect(promise).rejects.toThrow("Operation timed out after 100ms");
+    
+    await vi.advanceTimersByTimeAsync(100);
+    
+    await assertionPromise;
+    vi.useRealTimers();
+  });
+
+  it("retries on TimeoutError", async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    const fn = () => {
+      calls++;
+      if (calls === 1) {
+        return new Promise((resolve) => setTimeout(() => resolve("success"), 500));
+      }
+      return Promise.resolve("success");
+    };
+    
+    const promise = withRetry(fn, { timeoutMs: 100, maxRetries: 1, initialDelay: 10 });
+    
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(10);
+    
+    const result = await promise;
+    expect(result).toBe("success");
+    expect(calls).toBe(2);
+    vi.useRealTimers();
+  });
+
+  it("succeeds and clears timeout when operation finishes before timeoutMs", async () => {
+    vi.useFakeTimers();
+    const fn = vi.fn().mockResolvedValue("success");
+    
+    const result = await withRetry(fn, { timeoutMs: 500, maxRetries: 0 });
+    expect(result).toBe("success");
+    
+    await vi.advanceTimersByTimeAsync(500);
+    vi.useRealTimers();
+  });
 });
 
 describe("withRetry observability", () => {
@@ -253,8 +299,9 @@ describe("withRetry jitter", () => {
       maxDelay: 1000,
     });
 
-    expect(delays.length).toBeGreaterThanOrEqual(1);
-    for (const delay of delays) {
+    const retryDelays = delays.filter((d) => d !== 30000);
+    expect(retryDelays.length).toBeGreaterThanOrEqual(1);
+    for (const delay of retryDelays) {
       expect(delay).toBeGreaterThanOrEqual(0);
       expect(delay).toBeLessThanOrEqual(1000);
     }
@@ -284,7 +331,8 @@ describe("withRetry jitter", () => {
       }),
     ).rejects.toThrow();
 
-    for (const delay of delays) {
+    const retryDelays = delays.filter((d) => d !== 30000);
+    for (const delay of retryDelays) {
       expect(delay).toBeLessThanOrEqual(maxDelay);
     }
   });

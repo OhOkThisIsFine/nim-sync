@@ -14,14 +14,14 @@ describe("release automation", () => {
     expect(workflow).toContain("tags:\n      - 'v*'");
     expect(workflow).toContain("workflow_dispatch:");
     expect(workflow).toContain("id-token: write");
-    expect(workflow).toContain("node-version: '24'");
+    expect(workflow).toContain("node-version: '24.0.0'");
     expect(workflow).toContain("npm ci");
     expect(workflow).toContain("npm publish");
     expect(workflow).toContain("verify-release-tag.mjs");
     expect(workflow).toContain("if: github.event_name == 'push'");
     expect(workflow).toContain("registry-url: 'https://registry.npmjs.org'");
     expect(workflow).toContain("environment: publish");
-    expect(workflow).toContain("nick-fields/retry@v3");
+    expect(workflow).toContain("nick-fields/retry@ce71cc2ab81d554ebbe88c79ab5975992d79ba08");
     expect(workflow).toContain("--provenance");
     expect(workflow).toContain("NODE_AUTH_TOKEN");
   });

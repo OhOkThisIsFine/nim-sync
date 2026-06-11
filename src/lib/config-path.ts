@@ -56,3 +56,11 @@ export async function getConfigFilePath(): Promise<string> {
 
   return path.join(configDir, OPENCODE_CONFIG_FILENAMES[0]);
 }
+
+export function getCacheFilePath(): string {
+  return path.join(getCacheDir(), "nim-sync-cache.json");
+}
+
+export function getAuthFilePath(): string {
+  return path.join(getDataDir(), "auth.json");
+}

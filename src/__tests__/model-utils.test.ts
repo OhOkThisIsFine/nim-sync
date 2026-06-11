@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { validateAPIResponse } from "../lib/model-utils.js";
 import { NVIDIAApiError } from "../types/index.js";
-import { fetchModels } from "../plugin/nim-sync-service.js";
+import { fetchModels } from "../lib/nim-api.js";
 
 describe("validateAPIResponse", () => {
   it("returns models for valid response with data array", () => {

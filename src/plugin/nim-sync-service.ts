@@ -1,4 +1,3 @@
-import path from "path";
 import type {
   NIMModel,
   OpenCodeConfig,
@@ -6,15 +5,12 @@ import type {
   ProbeResult,
   NIMSyncToast,
 } from "../types/index.js";
-import { NVIDIAApiError } from "../types/index.js";
 import { validateOpenCodeConfig, isValidOpenCodeConfig } from "../types/schema.js";
-import { withRetry, type RetryOptions } from "../lib/retry.js";
 import { readJSONC, updateJSONCPaths } from "../lib/jsonc-utils.js";
 import { acquireLock } from "../lib/file-lock.js";
 import {
   getConfigFilePath,
-  getDataDir,
-  API_TIMEOUT_MS,
+  getAuthFilePath,
   CACHE_TTL_MS,
   MIN_MANUAL_REFRESH_INTERVAL_MS,
 } from "../lib/config-path.js";
@@ -24,12 +20,8 @@ import {
   NIM_REFRESH_COMMAND_TEMPLATE,
 } from "./nim-refresh-command.js";
 import { hashModels } from "../lib/crypto-utils.js";
-import { validateAPIResponse } from "../lib/model-utils.js";
 import { readCache, writeCache } from "../lib/nim-cache.js";
-
-const NIM_BASE_URL = "https://integrate.api.nvidia.com/v1";
-const PROBE_TIMEOUT_MS = 5_000;
-const PROBE_CONCURRENCY = 10;
+import { fetchModels, probeModels, NIM_BASE_URL } from "../lib/nim-api.js";
 
 type RefreshSource = "background" | "manual";
 export type NIMSyncRefreshResult =
@@ -55,7 +47,7 @@ export interface NIMSyncService {
   shouldRefresh: () => Promise<boolean>;
 }
 
-const getAuthPath = (): string => path.join(getDataDir(), "auth.json");
+const getAuthPath = (): string => getAuthFilePath();
 
 const defaultGetConfigSnapshot = async (): Promise<OpenCodeConfig> => {
   return readJSONC<OpenCodeConfig>(await getConfigFilePath(), isValidOpenCodeConfig);
@@ -151,123 +143,7 @@ const getManagedRefreshCommandCleanup = (
   };
 };
 
-export const fetchModels = async (
-  apiKey: string,
-  retryOptions?: RetryOptions,
-): Promise<NIMModel[]> => {
-  return withRetry(
-    async () => {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
-      try {
-        const response = await fetch(NIM_BASE_URL + "/models", {
-          headers: {
-            Authorization: "Bearer " + apiKey,
-            "Content-Type": "application/json",
-          },
-          signal: controller.signal,
-        });
-        clearTimeout(timeoutId);
-        if (!response.ok)
-          throw new NVIDIAApiError(response.status, response.statusText);
-        let data: unknown;
-        try {
-          data = await response.json();
-        } catch (e) {
-          throw new Error(
-            "Failed to parse JSON: " +
-              (e instanceof Error ? e.message : "Unknown"),
-          );
-        }
-        return validateAPIResponse(data);
-      } catch (error) {
-        clearTimeout(timeoutId);
-        if (error instanceof Error && error.name === "AbortError")
-          throw new Error(
-            "NVIDIA API request timed out after " +
-              API_TIMEOUT_MS / 1000 +
-              " seconds",
-          );
-        throw error;
-      }
-    },
-    {
-      maxRetries: 3,
-      initialDelay: 1000,
-      maxDelay: 10000,
-      retryStatusCodes: [429, 500, 502, 503, 504],
-      ...retryOptions,
-    },
-  );
-};
 
-const probeModel = async (
-  modelId: string,
-  apiKey: string,
-): Promise<ProbeResult | null> => {
-  const start = Date.now();
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
-  try {
-    const response = await fetch(NIM_BASE_URL + "/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: "Bearer " + apiKey,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: modelId,
-        max_tokens: 1,
-        messages: [{ role: "user", content: "hi" }],
-      }),
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
-    const latencyMs = Date.now() - start;
-    if (response.status === 404 || response.status === 410) {
-      return {
-        chatCapable: false,
-        reasoning: false,
-        latencyMs,
-        probedAt: Date.now(),
-      };
-    }
-    if (!response.ok) return null;
-    const body = (await response.json()) as Record<string, unknown>;
-    const usage = body?.usage as Record<string, unknown> | undefined;
-    const hasReasoning = usage?.reasoning_tokens !== undefined;
-    return {
-      chatCapable: true,
-      reasoning: hasReasoning,
-      latencyMs,
-      probedAt: Date.now(),
-    };
-  } catch {
-    clearTimeout(timeoutId);
-    return null;
-  }
-};
-
-const probeModels = async (
-  models: NIMModel[],
-  apiKey: string,
-  existingResults?: Record<string, ProbeResult>,
-): Promise<Record<string, ProbeResult>> => {
-  const results: Record<string, ProbeResult> = { ...existingResults };
-  const toProbe = models.filter((m) => !results[m.id]);
-  for (let i = 0; i < toProbe.length; i += PROBE_CONCURRENCY) {
-    const batch = toProbe.slice(i, i + PROBE_CONCURRENCY);
-    const batchResults = await Promise.all(
-      batch.map((m) => probeModel(m.id, apiKey)),
-    );
-    for (let j = 0; j < batch.length; j++) {
-      if (batchResults[j]) {
-        results[batch[j].id] = batchResults[j]!;
-      }
-    }
-  }
-  return results;
-};
 
 const sanitizeErrorMessage = (msg: string, apiKey: string | null): string => {
   if (!apiKey) return msg;
@@ -284,21 +160,25 @@ const persistManagedConfigUpdates = async (
   showToast: (toast: NIMSyncToast) => void,
   options: {
     validate?: boolean;
+    lockReleaseFn?: (() => Promise<void>) | null;
   } = {},
 ): Promise<void> => {
   let releaseLockFn: (() => Promise<void>) | null = null;
-  try {
-    releaseLockFn = await acquireLock("nim-config-update");
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : "Unknown";
-    console.error("[NIM-Sync] Config lock failed:", msg);
-    showToast({
-      title: "NVIDIA Config Lock Failed",
-      message: msg,
-      variant: "error",
-    });
-    throw e;
+  if (!options.lockReleaseFn) {
+    try {
+      releaseLockFn = await acquireLock("nim-config-update");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Unknown";
+      console.error("[NIM-Sync] Config lock failed:", msg);
+      showToast({
+        title: "NVIDIA Config Lock Failed",
+        message: msg,
+        variant: "error",
+      });
+      throw e;
+    }
   }
+
   try {
     if (options.validate !== false) {
       const validation = validateOpenCodeConfig(updatedConfig);
@@ -332,36 +212,57 @@ const persistManagedConfigUpdates = async (
   }
 };
 
-const removeManagedRefreshCommand = async (
+export const removeManagedRefreshCommand = async (
   showToast: (toast: NIMSyncToast) => void,
 ): Promise<boolean> => {
-  const configPath = await getConfigFilePath();
-  const config = await readJSONC<OpenCodeConfig>(configPath, isValidOpenCodeConfig);
-  const cleanup = getManagedRefreshCommandCleanup(config || {});
+  let lockReleaseFn: (() => Promise<void>) | null = null;
+  try {
+    lockReleaseFn = await acquireLock("nim-config-update");
+    const configPath = await getConfigFilePath();
+    let config: OpenCodeConfig;
+    try {
+      config = await readJSONC<OpenCodeConfig>(configPath, isValidOpenCodeConfig);
+    } catch (error) {
+      if (error && (error as NodeJS.ErrnoException).code === "ENOENT") {
+        config = {} as OpenCodeConfig;
+      } else {
+        throw error;
+      }
+    }
+    const cleanup = getManagedRefreshCommandCleanup(config || {});
 
-  if (!cleanup.removed) {
-    return false;
+    if (!cleanup.removed) {
+      return false;
+    }
+
+    const updatedConfig: OpenCodeConfig = {
+      ...(config || {}),
+    };
+
+    if (cleanup.command) {
+      updatedConfig.command = cleanup.command;
+    } else {
+      delete updatedConfig.command;
+    }
+
+    await persistManagedConfigUpdates(
+      configPath,
+      updatedConfig,
+      cleanup.updates,
+      showToast,
+      { lockReleaseFn },
+    );
+
+    return true;
+  } finally {
+    if (lockReleaseFn) {
+      try {
+        await lockReleaseFn();
+      } catch (e) {
+        console.error("[NIM-Sync] Failed to release config lock:", e);
+      }
+    }
   }
-
-  const updatedConfig: OpenCodeConfig = {
-    ...(config || {}),
-  };
-
-  if (cleanup.command) {
-    updatedConfig.command = cleanup.command;
-  } else {
-    delete updatedConfig.command;
-  }
-
-  await persistManagedConfigUpdates(
-    configPath,
-    updatedConfig,
-    cleanup.updates,
-    showToast,
-    { validate: false },
-  );
-
-  return true;
 };
 
 const runRefreshModels = async (
@@ -531,42 +432,107 @@ export function createNIMSyncService(
     models: NIMModel[],
     probeResults?: Record<string, ProbeResult>,
   ): Promise<boolean> => {
-    const configPath = await getConfigFilePath();
-    const config = await readJSONC<OpenCodeConfig>(configPath, isValidOpenCodeConfig);
-
-    const oldModels = config?.provider?.nim?.models;
-    const fetchedIds = new Set(models.map((m) => m.id));
-
-    if (oldModels) {
-      for (const [id, entry] of Object.entries(oldModels)) {
-        if (!fetchedIds.has(id) && entry?.options && Object.keys(entry.options).length > 0) {
-          showToast({
-            title: "Model Removed",
-            message: `Model "${id}" was removed from NVIDIA API. Custom options for this model were discarded.`,
-            variant: "info",
-          });
+    let lockReleaseFn: (() => Promise<void>) | null = null;
+    try {
+      lockReleaseFn = await acquireLock("nim-config-update");
+      const configPath = await getConfigFilePath();
+      let config: OpenCodeConfig;
+      try {
+        config = await readJSONC<OpenCodeConfig>(configPath, isValidOpenCodeConfig);
+      } catch (error) {
+        if (error && (error as NodeJS.ErrnoException).code === "ENOENT") {
+          config = {} as OpenCodeConfig;
+        } else {
+          throw error;
         }
       }
-    }
 
-    const baseModels = models.reduce(
-      (acc, m) => {
-        acc[m.id] = {
-          name: m.name,
-          options: config?.provider?.nim?.models?.[m.id]?.options || {},
-        };
-        return acc;
-      },
-      {} as Record<string, { name: string; options: Record<string, unknown> }>,
-    );
-    const modelsHash = hashModels(models);
-    const cache = await readCache();
-    const refreshCommandCleanup = getManagedRefreshCommandCleanup(config || {});
+      const oldModels = config?.provider?.nim?.models;
+      const fetchedIds = new Set(models.map((m) => m.id));
 
-    const noProbeModels = baseModels;
-    const managedConfigChanged = !managedNIMConfigMatches(
-      config?.provider?.nim,
-      {
+      if (oldModels) {
+        for (const [id, entry] of Object.entries(oldModels)) {
+          if (!fetchedIds.has(id) && entry?.options && Object.keys(entry.options).length > 0) {
+            showToast({
+              title: "Model Removed",
+              message: `Model "${id}" was removed from NVIDIA API. Custom options for this model were discarded.`,
+              variant: "info",
+            });
+          }
+        }
+      }
+
+      const baseModels = models.reduce(
+        (acc, m) => {
+          acc[m.id] = {
+            name: m.name,
+            options: config?.provider?.nim?.models?.[m.id]?.options || {},
+          };
+          return acc;
+        },
+        {} as Record<string, { name: string; options: Record<string, unknown> }>,
+      );
+      const modelsHash = hashModels(models);
+      const cache = await readCache();
+      const refreshCommandCleanup = getManagedRefreshCommandCleanup(config || {});
+
+      const noProbeModels = baseModels;
+      const managedConfigChanged = !managedNIMConfigMatches(
+        config?.provider?.nim,
+        {
+          ...config?.provider?.nim,
+          npm: "@ai-sdk/openai-compatible",
+          name: "NVIDIA NIM",
+          options: {
+            ...config?.provider?.nim?.options,
+            baseURL: NIM_BASE_URL,
+          },
+          models: noProbeModels,
+        },
+      );
+      const managedCommandChanged = refreshCommandCleanup.removed;
+
+      if (
+        cache?.modelsHash === modelsHash &&
+        !managedConfigChanged &&
+        !managedCommandChanged
+      ) {
+        try {
+          await writeCache({
+            ...cache,
+            lastRefresh: Date.now(),
+            modelsHash,
+            baseURL: NIM_BASE_URL,
+            probeResults: probeResults ?? cache?.probeResults,
+          }, showToast);
+        } catch {
+          /* non-fatal */
+        }
+        return false;
+      }
+
+      const newModels = models.reduce(
+        (acc, m) => {
+          const existingOptions =
+            config?.provider?.nim?.models?.[m.id]?.options || {};
+          const probe = probeResults?.[m.id];
+          acc[m.id] = {
+            name: m.name,
+            options: probe
+              ? {
+                  ...existingOptions,
+                  nimProbeChatCapable: probe.chatCapable,
+                  nimProbeReasoning: probe.reasoning,
+                  nimProbeLatencyMs: probe.latencyMs,
+                }
+              : existingOptions,
+          };
+          return acc;
+        },
+        {} as Record<string, { name: string; options: Record<string, unknown> }>,
+      );
+
+      const updatedNIMConfig: NonNullable<OpenCodeConfig["provider"]>["nim"] = {
         ...config?.provider?.nim,
         npm: "@ai-sdk/openai-compatible",
         name: "NVIDIA NIM",
@@ -574,19 +540,32 @@ export function createNIMSyncService(
           ...config?.provider?.nim?.options,
           baseURL: NIM_BASE_URL,
         },
-        models: noProbeModels,
-      },
-    );
-    const managedCommandChanged = refreshCommandCleanup.removed;
+        models: newModels,
+      };
 
-    if (
-      cache?.modelsHash === modelsHash &&
-      !managedConfigChanged &&
-      !managedCommandChanged
-    ) {
+      const updatedConfig: OpenCodeConfig = {
+        ...(config || {}),
+        provider: { ...config?.provider, nim: updatedNIMConfig },
+      };
+
+      if (refreshCommandCleanup.command) {
+        updatedConfig.command = refreshCommandCleanup.command;
+      } else {
+        delete updatedConfig.command;
+      }
+
+      await persistManagedConfigUpdates(
+        configPath,
+        updatedConfig,
+        [
+          { jsonPath: ["provider", "nim"], data: updatedNIMConfig },
+          ...refreshCommandCleanup.updates,
+        ],
+        showToast,
+        { lockReleaseFn },
+      );
       try {
         await writeCache({
-          ...cache,
           lastRefresh: Date.now(),
           modelsHash,
           baseURL: NIM_BASE_URL,
@@ -595,72 +574,16 @@ export function createNIMSyncService(
       } catch {
         /* non-fatal */
       }
-      return false;
+      return true;
+    } finally {
+      if (lockReleaseFn) {
+        try {
+          await lockReleaseFn();
+        } catch (e) {
+          console.error("[NIM-Sync] Failed to release config lock:", e);
+        }
+      }
     }
-
-    const newModels = models.reduce(
-      (acc, m) => {
-        const existingOptions =
-          config?.provider?.nim?.models?.[m.id]?.options || {};
-        const probe = probeResults?.[m.id];
-        acc[m.id] = {
-          name: m.name,
-          options: probe
-            ? {
-                ...existingOptions,
-                nimProbeChatCapable: probe.chatCapable,
-                nimProbeReasoning: probe.reasoning,
-                nimProbeLatencyMs: probe.latencyMs,
-              }
-            : existingOptions,
-        };
-        return acc;
-      },
-      {} as Record<string, { name: string; options: Record<string, unknown> }>,
-    );
-
-    const updatedNIMConfig: NonNullable<OpenCodeConfig["provider"]>["nim"] = {
-      ...config?.provider?.nim,
-      npm: "@ai-sdk/openai-compatible",
-      name: "NVIDIA NIM",
-      options: {
-        ...config?.provider?.nim?.options,
-        baseURL: NIM_BASE_URL,
-      },
-      models: newModels,
-    };
-
-    const updatedConfig: OpenCodeConfig = {
-      ...(config || {}),
-      provider: { ...config?.provider, nim: updatedNIMConfig },
-    };
-
-    if (refreshCommandCleanup.command) {
-      updatedConfig.command = refreshCommandCleanup.command;
-    } else {
-      delete updatedConfig.command;
-    }
-
-    await persistManagedConfigUpdates(
-      configPath,
-      updatedConfig,
-      [
-        { jsonPath: ["provider", "nim"], data: updatedNIMConfig },
-        ...refreshCommandCleanup.updates,
-      ],
-      showToast,
-    );
-    try {
-      await writeCache({
-        lastRefresh: Date.now(),
-        modelsHash,
-        baseURL: NIM_BASE_URL,
-        probeResults: probeResults ?? cache?.probeResults,
-      }, showToast);
-    } catch {
-      /* non-fatal */
-    }
-    return true;
   };
 
   const refreshModels = async (
@@ -721,7 +644,27 @@ const mutableOptionsRef: { current: NIMSyncServiceOptions } = { current: {} };
 export function getOrCreateNIMSyncService(
   options: NIMSyncServiceOptions = {},
 ): NIMSyncService {
-  mutableOptionsRef.current = options;
+  const currentOptions = mutableOptionsRef.current;
+  
+  let showToast = currentOptions.showToast;
+  if (options.showToast) {
+    if (showToast) {
+      const prevShowToast = showToast;
+      const nextShowToast = options.showToast;
+      showToast = (toast) => {
+        prevShowToast(toast);
+        nextShowToast(toast);
+      };
+    } else {
+      showToast = options.showToast;
+    }
+  }
+
+  mutableOptionsRef.current = {
+    getConfigSnapshot: options.getConfigSnapshot ?? currentOptions.getConfigSnapshot,
+    showToast,
+  };
+
   if (!sharedService) {
     sharedService = createNIMSyncService(mutableOptionsRef);
   }

@@ -442,12 +442,13 @@ describe("validateOpenCodeConfig", () => {
       }
     });
 
-    it("returns empty object for missing file (ENOENT)", async () => {
-      const result = await readJSONC(
-        path.join(os.tmpdir(), "nim-sync-nonexistent-" + Date.now(), "no-file.json"),
-        isValidOpenCodeConfig,
-      );
-      expect(result).toEqual({});
+    it("propagates ENOENT for missing file", async () => {
+      await expect(
+        readJSONC(
+          path.join(os.tmpdir(), "nim-sync-nonexistent-" + Date.now(), "no-file.json"),
+          isValidOpenCodeConfig,
+        )
+      ).rejects.toThrow();
     });
   });
 

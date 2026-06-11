@@ -1,6 +1,7 @@
 import fs from "fs/promises";
 import path from "path";
 import { cleanupOldBackups } from "./file-lock.js";
+import { BackupError } from "./errors.js";
 
 export interface AtomicWriteOptions {
   backup?: boolean;
@@ -36,7 +37,7 @@ export async function atomicWrite(
         await cleanupOldBackups(backupDir, path.basename(filePath));
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-          throw new Error(
+          throw new BackupError(
             `Failed to create backup: ${error instanceof Error ? error.message : "Unknown error"}`,
           );
         }

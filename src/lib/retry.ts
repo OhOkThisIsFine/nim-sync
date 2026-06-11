@@ -30,6 +30,13 @@ const DEFAULT_OPTIONS: Required<RetryOptions> = {
   onRetry: undefined!,
 };
 
+export class TimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "TimeoutError";
+  }
+}
+
 export async function withRetry<T>(
   fn: () => Promise<T>,
   options: RetryOptions = {},
@@ -38,8 +45,27 @@ export async function withRetry<T>(
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt <= opts.maxRetries; attempt++) {
+    let timeoutId: NodeJS.Timeout | undefined;
+    let isDone = false;
     try {
-      const result = await fn();
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          if (!isDone) {
+            reject(new TimeoutError(`Operation timed out after ${opts.timeoutMs}ms`));
+          }
+        }, opts.timeoutMs);
+      });
+      timeoutPromise.catch(() => {});
+
+      const result = await Promise.race([
+        fn().finally(() => {
+          isDone = true;
+          if (timeoutId) clearTimeout(timeoutId);
+        }),
+        timeoutPromise,
+      ]);
+
+      isDone = true;
       if (attempt > 0) {
         console.info(
           "[NIM-Sync] Retry succeeded on attempt %d/%d",
@@ -49,6 +75,8 @@ export async function withRetry<T>(
       }
       return result;
     } catch (error) {
+      isDone = true;
+      if (timeoutId) clearTimeout(timeoutId);
       lastError = error instanceof Error ? error : new Error(String(error));
 
       const shouldRetry = shouldRetryError(error, opts);
