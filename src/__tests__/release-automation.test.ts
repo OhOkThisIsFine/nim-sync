@@ -20,7 +20,7 @@ describe("release automation", () => {
     expect(workflow).toContain("verify-release-tag.mjs");
     expect(workflow).toContain("if: github.event_name == 'push'");
     expect(workflow).not.toContain("registry-url:");
-    expect(workflow).toContain("environment: publish");
+    expect(workflow).not.toContain("environment:");
     expect(workflow).toContain("nick-fields/retry@ce71cc2ab81d554ebbe88c79ab5975992d79ba08");
     expect(workflow).toContain("--provenance");
     expect(workflow).not.toContain("NPM_CONFIG_USERCONFIG");
