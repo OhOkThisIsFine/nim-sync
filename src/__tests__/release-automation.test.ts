@@ -19,11 +19,11 @@ describe("release automation", () => {
     expect(workflow).toContain("npm publish");
     expect(workflow).toContain("verify-release-tag.mjs");
     expect(workflow).toContain("if: github.event_name == 'push'");
-    expect(workflow).toContain("registry-url: 'https://registry.npmjs.org'");
+    expect(workflow).not.toContain("registry-url:");
     expect(workflow).toContain("environment: publish");
     expect(workflow).toContain("nick-fields/retry@ce71cc2ab81d554ebbe88c79ab5975992d79ba08");
     expect(workflow).toContain("--provenance");
-    expect(workflow).toContain("NODE_AUTH_TOKEN");
+    expect(workflow).not.toContain("NPM_CONFIG_USERCONFIG");
   });
 
   it("documents the steady-state trusted publishing flow", async () => {
