@@ -25,18 +25,18 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Verify release tag is on main branch
+      - name: Verify release tag is on master branch
         if: github.event_name == 'push'
         run: |
-          echo "Starting phase: Verify release tag is on main branch..."
+          echo "Starting phase: Verify release tag is on master branch..."
           start_time=$(date +%s)
-          git branch -r --contains ${{ github.ref_name }} | grep -q "origin/main" || {
-            echo "Error: Tag ${{ github.ref_name }} is not on the main branch."
+          git branch -r --contains ${{ github.ref_name }} | grep -q "origin/master" || {
+            echo "Error: Tag ${{ github.ref_name }} is not on the master branch."
             exit 1
           }
           end_time=$(date +%s)
           elapsed=$((end_time - start_time))
-          echo "Completed phase: Verify release tag is on main branch in ${elapsed}s."
+          echo "Completed phase: Verify release tag is on master branch in ${elapsed}s."
 
       - name: Set up Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
