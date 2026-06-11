@@ -103,35 +103,11 @@ jobs:
           echo "Completed phase: Build package in ${elapsed}s."
 
       - name: Publish to npm
-        id: publish
         if: github.event_name == 'push'
-        uses: nick-fields/retry@ce71cc2ab81d554ebbe88c79ab5975992d79ba08 # v3.0.2
-        with:
-          max_attempts: 3
-          retry_on: error
-          timeout_minutes: 5
-          command: |
-            echo "Starting phase: Publish to npm..."
-            start_time=$(date +%s)
-            exit_code=0
-            npm publish --provenance --access public 2> npm-publish-error.log || exit_code=$?
-            end_time=$(date +%s)
-            elapsed=$((end_time - start_time))
-            echo "Completed phase: Publish to npm in ${elapsed}s."
-            if [ $exit_code -ne 0 ]; then
-              echo $exit_code > npm-publish-status.txt
-              cat npm-publish-error.log >&2
-              exit $exit_code
-            fi
-
-      - name: Notify publish failure
-        if: failure() && steps.publish.outcome == 'failure'
         run: |
-          echo "::warning::npm publish failed after 3 attempts."
-          if [ -f npm-publish-status.txt ]; then
-            echo "Exit code: $(cat npm-publish-status.txt)"
-          fi
-          if [ -f npm-publish-error.log ]; then
-            echo "=== npm registry response / error details ==="
-            cat npm-publish-error.log
-          fi
+          echo "Starting phase: Publish to npm..."
+          start_time=$(date +%s)
+          npm publish --provenance --access public
+          end_time=$(date +%s)
+          elapsed=$((end_time - start_time))
+          echo "Completed phase: Publish to npm in ${elapsed}s."
